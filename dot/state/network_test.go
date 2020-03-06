@@ -29,8 +29,9 @@ import (
 
 var testHealth = &common.Health{}
 var testNetworkState = &common.NetworkState{}
-var testPeers = &[]common.PeerInfo{}
-
+//var testPeers = &[]common.PeerInfo{}
+var testPeers = []common.PeerInfo{{PeerID: "alice", BestHash: common.Hash{}, BestNumber: 1, ProtocolVersion: 2, Roles: 0x03},
+	{PeerID: "bob", BestHash: common.Hash{}, BestNumber: 50, ProtocolVersion: 60, Roles: 0x70},}
 // test state.Network
 func TestNetworkState(t *testing.T) {
 	state := newTestService(t)
