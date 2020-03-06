@@ -19,12 +19,11 @@ package scale
 import (
 	"bytes"
 	"errors"
+	"github.com/ChainSafe/gossamer/lib/common"
 	"math/big"
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/ChainSafe/gossamer/lib/common"
 
 	"github.com/stretchr/testify/require"
 )
@@ -130,6 +129,17 @@ var encodeTests = []encodeTest{
 	{val: [][]int{{0, 1}, {1, 0}}, output: []byte{0x08, 0x08, 0x00, 0x04, 0x08, 0x04, 0x00}, bytesEncoded: 7},
 	{val: []*big.Int{big.NewInt(0), big.NewInt(1)}, output: []byte{0x08, 0x00, 0x04}, bytesEncoded: 3},
 	{val: [][]byte{{0x00, 0x01}, {0x01, 0x00}}, output: []byte{0x08, 0x08, 0x00, 0x01, 0x08, 0x01, 0x00}, bytesEncoded: 7},
+
+	//arrays of structs
+	// TODO deal with &[]struct
+	//{val: &[]struct {
+	//	Foo []byte
+	//	Bar int32
+	//}{{[]byte{0x01}, 2}, {[]byte{0x03}, 4}}, output: []byte{0x04, 0x01, 0x02, 0, 0, 0}, bytesEncoded: 6},
+	{val: []struct {
+		Foo []byte
+		Bar int32
+	}{{[]byte{0x1}, 2}, {[]byte{0x3}, 4}}, output: []byte{8, 4, 1, 2, 0, 0, 0, 4, 3, 4, 0, 0, 0}, bytesEncoded: 13},
 }
 
 // Test strings for various values of n & mode. Also test strings with special characters
@@ -199,6 +209,8 @@ func TestEncode(t *testing.T) {
 		}
 	}
 }
+
+
 
 func TestEncodeAndDecodeStringInStruct(t *testing.T) {
 	test := &struct {
