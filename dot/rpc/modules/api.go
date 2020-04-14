@@ -34,6 +34,7 @@ type TransactionQueueAPI interface {
 	Pop() *transaction.ValidTransaction
 	Peek() *transaction.ValidTransaction
 	Pending() []*transaction.ValidTransaction
+	RemoveExtrinsic(ext types.Extrinsic)
 }
 
 // CoreAPI is the interface for the core methods

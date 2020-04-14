@@ -135,6 +135,8 @@ func (cm *AuthorModule) PendingExtrinsics(r *http.Request, req *EmptyRequest, re
 
 // RemoveExtrinsic Remove given extrinsic from the pool and temporarily ban it to prevent reimporting
 func (cm *AuthorModule) RemoveExtrinsic(r *http.Request, req *ExtrinsicOrHashRequest, res *RemoveExtrinsicsResponse) error {
+	ext := types.NewExtrinsic([]byte{})
+	cm.txQueueAPI.RemoveExtrinsic(ext)
 	return nil
 }
 
