@@ -141,12 +141,12 @@ func TestGossip(t *testing.T) {
 		t.Error("node A timeout waiting for message")
 	}
 
-	// node C gossips message to node A
-	select {
-	case <-msgSendA:
-	case <-time.After(TestMessageTimeout):
-		t.Error("node A timeout waiting for message")
-	}
+	// // node C gossips message to node A
+	// select {
+	// case <-msgSendA:
+	// case <-time.After(TestMessageTimeout):
+	// 	t.Error("node A timeout waiting for message")
+	// }
 
 	// node A gossips message to node B
 	select {
@@ -171,11 +171,11 @@ func TestGossip(t *testing.T) {
 		)
 	}
 
-	if hasSeenA, ok := nodeA.gossip.hasSeen.Load(TestMessage.IDString()); !ok || hasSeenA.(bool) == false {
-		t.Error(
-			"node A did not receive block request message from node C",
-			"\nreceived:", hasSeenA,
-			"\nexpected:", true,
-		)
-	}
+	// if hasSeenA, ok := nodeA.gossip.hasSeen.Load(TestMessage.IDString()); !ok || hasSeenA.(bool) == false {
+	// 	t.Error(
+	// 		"node A did not receive block request message from node C",
+	// 		"\nreceived:", hasSeenA,
+	// 		"\nexpected:", true,
+	// 	)
+	// }
 }

@@ -17,11 +17,15 @@
 package network
 
 import (
+	"math/rand"
 	"sync"
+	"time"
 
 	log "github.com/ChainSafe/log15"
 	"github.com/libp2p/go-libp2p-core/peer"
 )
+
+var gossipSize = 3
 
 // gossip submodule
 type gossip struct {
@@ -52,7 +56,30 @@ func (g *gossip) handleMessage(msg Message, from peer.ID) {
 			"type", msg.GetType(),
 		)
 
+		peers := g.host.peers()
+		rand.Seed(time.Now().Unix())
+
+		if len(peers) == 0 {
+			return
+		}
+
+		for i := 0; i < min(gossipSize, len(peers)); i++ {
+			r := rand.Intn(len(peers))
+			p := peers[r]
+			g.host.send(p, msg)
+
+			peers = append(peers[:r], peers[r+1:]...)
+		}
+
 		// broadcast message to connected peers
-		g.host.broadcastExcluding(msg, from)
+		//g.host.broadcastExcluding(msg, from)
 	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+
+	return b
 }
