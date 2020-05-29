@@ -17,6 +17,7 @@
 package runtime
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -95,4 +96,10 @@ func TestConcurrentRuntimeCalls(t *testing.T) {
 	go func() {
 		_, _ = runtime.Exec(CoreVersion, []byte{})
 	}()
+}
+
+func TestRuntime_Exec_Metadata(t *testing.T) {
+	runtime := NewTestRuntime(t, SUBSTRATE_TEST_RUNTIME)
+	res, err := runtime.Exec(Metadata_metadata, []byte{})
+	fmt.Printf("res %v, err %v\n", res, err)
 }
