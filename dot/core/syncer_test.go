@@ -692,3 +692,50 @@ func TestExecuteBlock_WithExtrinsic(t *testing.T) {
 	_, err = syncer.executeBlock(block)
 	require.NoError(t, err)
 }
+
+func TestExecuteBlock_NoExtrinsics(t *testing.T) {
+	tt := trie.NewEmptyTrie()
+	rt := runtime.NewTestRuntimeWithTrie(t, runtime.NODE_RUNTIME, tt)
+	// load authority into runtime
+	kp, err := sr25519.GenerateKeypair()
+	require.NoError(t, err)
+	pubkey := kp.Public().Encode()
+	err = tt.Put(runtime.TestAuthorityDataKey, append([]byte{4}, pubkey...))
+	require.NoError(t, err)
+	cfg := &SyncerConfig{
+		Runtime: rt,
+	}
+	syncer := newTestSyncer(t, cfg)
+	bcfg := &babe.ServiceConfig{
+		Runtime:          syncer.runtime,
+		TransactionQueue: syncer.transactionQueue,
+		Keypair:          kp,
+		BlockState:       syncer.blockState,
+	}
+	builder := newBlockBuilder(t, bcfg)
+	parent, err := syncer.blockState.BestBlockHeader()
+	require.NoError(t, err)
+	var block *types.Block
+	for i := 0; i < maxRetries; i++ {
+		slot := babe.NewSlot(1, 0, 0)
+		block, err = builder.BuildBlock(parent, *slot)
+		require.NoError(t, err)
+		if err == nil {
+			break
+		}
+	}
+	t.Log(parent)
+	t.Log(block)
+	require.NoError(t, err)
+	bd := &types.BlockData{
+		Hash:   block.Header.Hash(),
+		Header: block.Header.AsOptional(),
+		//Body: block.Body.AsOptional(),
+		Body:          optional.NewBody(false, nil),
+		Receipt:       optional.NewBytes(false, nil),
+		MessageQueue:  optional.NewBytes(false, nil),
+		Justification: optional.NewBytes(false, nil),
+	}
+	_, err = syncer.executeBlockData(bd)
+	require.NoError(t, err)
+}
