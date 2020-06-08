@@ -610,18 +610,18 @@ func TestExecuteBlock_NoExtrinsics(t *testing.T) {
 	tt := trie.NewEmptyTrie()
 	rt := runtime.NewTestRuntimeWithTrie(t, runtime.NODE_RUNTIME, tt)
 
-	// load authority into runtime
-	kp, err := sr25519.GenerateKeypair()
-	require.NoError(t, err)
+	// // load authority into runtime
+	// kp, err := sr25519.GenerateKeypair()
+	// require.NoError(t, err)
 
-	pubkey := kp.Public().Encode()
-	err = tt.Put(runtime.TestAuthorityDataKey, append([]byte{4}, pubkey...))
-	require.NoError(t, err)
+	// pubkey := kp.Public().Encode()
+	// err = tt.Put(runtime.TestAuthorityDataKey, append([]byte{4}, pubkey...))
+	// require.NoError(t, err)
 
-	genesisHashKey, _ := common.HexToBytes("0xca263a1d57613bec1f68af5eb50a2d31")
-	genesisHash := testGenesisHeader.Hash()
-	err = tt.Put(genesisHashKey, genesisHash[:])
-	require.NoError(t, err)
+	// genesisHashKey, _ := common.HexToBytes("0xca263a1d57613bec1f68af5eb50a2d31")
+	// genesisHash := testGenesisHeader.Hash()
+	// err = tt.Put(genesisHashKey, genesisHash[:])
+	// require.NoError(t, err)
 
 	cfg := &SyncerConfig{
 		Runtime: rt,
@@ -629,33 +629,62 @@ func TestExecuteBlock_NoExtrinsics(t *testing.T) {
 
 	syncer := newTestSyncer(t, cfg)
 
-	bcfg := &babe.SessionConfig{
-		Runtime:          syncer.runtime,
-		TransactionQueue: syncer.transactionQueue,
-		Keypair:          kp,
-		BlockState:       syncer.blockState,
-	}
+	// bcfg := &babe.SessionConfig{
+	// 	Runtime:          syncer.runtime,
+	// 	TransactionQueue: syncer.transactionQueue,
+	// 	Keypair:          kp,
+	// 	BlockState:       syncer.blockState,
+	// }
 
 	//executeGenesisBlock(t, syncer)
 
-	builder := newBlockBuilder(t, bcfg)
+	//builder := newBlockBuilder(t, bcfg)
 	// parent, err := syncer.blockState.BestBlockHeader()
 	// require.NoError(t, err)
 
-	var block *types.Block
-	for i := 0; i < maxRetries; i++ {
-		slot := babe.NewSlot(1, 0, 0)
-		block, err = builder.BuildBlock(testGenesisHeader, *slot)
-		require.NoError(t, err)
-		if err == nil {
-			break
-		}
+	//parent := testGenesisHeader.DeepCopy()
+	//parent.StateRoot = tt.Hash()
+	//parent.Digest = [][]byte{{}}
+
+	// err := rt.InitializeBlock(parent)
+	// require.NoError(t, err)
+	// _, err := rt.ApplyExtrinsic([]byte{32, 4, 3, 0, 3, 98, 214, 215, 94})
+	// require.NoError(t, err)
+	// parent, err = rt.FinalizeBlock()
+	// require.NoError(t, err)
+	//parent.StateRoot = trie.EmptyHash
+
+	//t.Log(parent)
+
+	// var block *types.Block
+	// for i := 0; i < maxRetries; i++ {
+	// 	slot := babe.NewSlot(1, 0, 0)
+	// 	block, err = builder.BuildBlock(parent, *slot)
+	// 	require.NoError(t, err)
+	// 	if err == nil {
+	// 		break
+	// 	}
+	// }
+
+	stateRoot, _ := common.HexToHash("0x0ef731c1d5124cbb8a13ff02171110ebd23a067d15491d5a73fca0b6b1efae7e")
+	extrinsicsRoot, _ := common.HexToHash("0x03170a2e7597b7b7e3d84c05391d139a62b157e78786d8c082f29dcf4c111314")
+
+	parentHash := common.Hash{69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69}
+	block := &types.Block{
+		Header: &types.Header{
+			//ParentHash: parent.Hash(),
+			ParentHash:     parentHash,
+			Number:         big.NewInt(1),
+			StateRoot:      stateRoot,
+			ExtrinsicsRoot: extrinsicsRoot,
+			Digest:         [][]byte{},
+		},
+		Body: &types.Body{},
 	}
 
+	//require.NoError(t, err)
 	t.Log(block)
-
-	require.NoError(t, err)
-	_, err = syncer.executeBlock(block)
+	_, err := syncer.executeBlock(block)
 	require.NoError(t, err)
 }
 

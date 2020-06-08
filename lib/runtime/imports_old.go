@@ -410,6 +410,7 @@ func ext_blake2_256(context unsafe.Pointer, data, length, out int32) {
 	log.Trace("[ext_blake2_256] executing...")
 	instanceContext := wasm.IntoInstanceContext(context)
 	memory := instanceContext.Memory().Data()
+	log.Trace("[ext_blake2_256] hashing...", "data", fmt.Sprintf("0x%x", memory[data:data+length]))
 	hash, err := common.Blake2bHash(memory[data : data+length])
 	if err != nil {
 		log.Error("[ext_blake2_256]", "error", err)
