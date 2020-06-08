@@ -311,7 +311,7 @@ func ext_get_allocated_storage(context unsafe.Pointer, keyData, keyLen, writtenO
 		return 0
 	}
 
-	log.Trace("[ext_get_allocated_storage]", "value", val)
+	log.Trace("[ext_get_allocated_storage]", "value", fmt.Sprintf("0x%x", val))
 	copy(memory[ptr:ptr+uint32(len(val))], val)
 
 	// copy length to memory

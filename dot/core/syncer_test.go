@@ -595,9 +595,20 @@ func newBlockBuilder(t *testing.T, cfg *babe.SessionConfig) *babe.Session {
 	return b
 }
 
-func TestExecuteBlock(t *testing.T) {
+// func executeGenesisBlock(t *testing.T, syncer *Syncer) {
+// 	genesisBlock := &types.Block{
+// 		Header: testGenesisHeader,
+// 		Body: &types.Body{},
+// 	}
+
+// 	ok, err := syncer.executeBlock(genesisBlock)
+// 	require.NoError(t, err)
+// 	t.Log(ok)
+// }
+
+func TestExecuteBlock_NoExtrinsics(t *testing.T) {
 	tt := trie.NewEmptyTrie()
-	rt := runtime.NewTestRuntimeWithTrie(t, runtime.SUBSTRATE_TEST_RUNTIME, tt)
+	rt := runtime.NewTestRuntimeWithTrie(t, runtime.NODE_RUNTIME, tt)
 
 	// load authority into runtime
 	kp, err := sr25519.GenerateKeypair()
@@ -605,6 +616,11 @@ func TestExecuteBlock(t *testing.T) {
 
 	pubkey := kp.Public().Encode()
 	err = tt.Put(runtime.TestAuthorityDataKey, append([]byte{4}, pubkey...))
+	require.NoError(t, err)
+
+	genesisHashKey, _ := common.HexToBytes("0xca263a1d57613bec1f68af5eb50a2d31")
+	genesisHash := testGenesisHeader.Hash()
+	err = tt.Put(genesisHashKey, genesisHash[:])
 	require.NoError(t, err)
 
 	cfg := &SyncerConfig{
@@ -620,19 +636,23 @@ func TestExecuteBlock(t *testing.T) {
 		BlockState:       syncer.blockState,
 	}
 
+	//executeGenesisBlock(t, syncer)
+
 	builder := newBlockBuilder(t, bcfg)
-	parent, err := syncer.blockState.BestBlockHeader()
-	require.NoError(t, err)
+	// parent, err := syncer.blockState.BestBlockHeader()
+	// require.NoError(t, err)
 
 	var block *types.Block
 	for i := 0; i < maxRetries; i++ {
 		slot := babe.NewSlot(1, 0, 0)
-		block, err = builder.BuildBlock(parent, *slot)
+		block, err = builder.BuildBlock(testGenesisHeader, *slot)
 		require.NoError(t, err)
 		if err == nil {
 			break
 		}
 	}
+
+	t.Log(block)
 
 	require.NoError(t, err)
 	_, err = syncer.executeBlock(block)
@@ -693,49 +713,49 @@ func TestExecuteBlock_WithExtrinsic(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestExecuteBlock_NoExtrinsics(t *testing.T) {
-	tt := trie.NewEmptyTrie()
-	rt := runtime.NewTestRuntimeWithTrie(t, runtime.NODE_RUNTIME, tt)
-	// load authority into runtime
-	kp, err := sr25519.GenerateKeypair()
-	require.NoError(t, err)
-	pubkey := kp.Public().Encode()
-	err = tt.Put(runtime.TestAuthorityDataKey, append([]byte{4}, pubkey...))
-	require.NoError(t, err)
-	cfg := &SyncerConfig{
-		Runtime: rt,
-	}
-	syncer := newTestSyncer(t, cfg)
-	bcfg := &babe.ServiceConfig{
-		Runtime:          syncer.runtime,
-		TransactionQueue: syncer.transactionQueue,
-		Keypair:          kp,
-		BlockState:       syncer.blockState,
-	}
-	builder := newBlockBuilder(t, bcfg)
-	parent, err := syncer.blockState.BestBlockHeader()
-	require.NoError(t, err)
-	var block *types.Block
-	for i := 0; i < maxRetries; i++ {
-		slot := babe.NewSlot(1, 0, 0)
-		block, err = builder.BuildBlock(parent, *slot)
-		require.NoError(t, err)
-		if err == nil {
-			break
-		}
-	}
-	t.Log(parent)
-	t.Log(block)
-	require.NoError(t, err)
-	bd := &types.BlockData{
-		Hash:   block.Header.Hash(),
-		Header: block.Header.AsOptional(),
-		//Body: block.Body.AsOptional(),
-		Body:          optional.NewBody(false, nil),
-		Receipt:       optional.NewBytes(false, nil),
-		MessageQueue:  optional.NewBytes(false, nil),
-		Justification: optional.NewBytes(false, nil),
-	}
-	_, err = syncer.executeBlockData(bd)
-	require.NoError(t, err)
-}
+// func TestExecuteBlock_NoExtrinsics(t *testing.T) {
+// 	tt := trie.NewEmptyTrie()
+// 	rt := runtime.NewTestRuntimeWithTrie(t, runtime.NODE_RUNTIME, tt)
+// 	// load authority into runtime
+// 	kp, err := sr25519.GenerateKeypair()
+// 	require.NoError(t, err)
+// 	pubkey := kp.Public().Encode()
+// 	err = tt.Put(runtime.TestAuthorityDataKey, append([]byte{4}, pubkey...))
+// 	require.NoError(t, err)
+// 	cfg := &SyncerConfig{
+// 		Runtime: rt,
+// 	}
+// 	syncer := newTestSyncer(t, cfg)
+// 	bcfg := &babe.ServiceConfig{
+// 		Runtime:          syncer.runtime,
+// 		TransactionQueue: syncer.transactionQueue,
+// 		Keypair:          kp,
+// 		BlockState:       syncer.blockState,
+// 	}
+// 	builder := newBlockBuilder(t, bcfg)
+// 	parent, err := syncer.blockState.BestBlockHeader()
+// 	require.NoError(t, err)
+// 	var block *types.Block
+// 	for i := 0; i < maxRetries; i++ {
+// 		slot := babe.NewSlot(1, 0, 0)
+// 		block, err = builder.BuildBlock(parent, *slot)
+// 		require.NoError(t, err)
+// 		if err == nil {
+// 			break
+// 		}
+// 	}
+// 	t.Log(parent)
+// 	t.Log(block)
+// 	require.NoError(t, err)
+// 	bd := &types.BlockData{
+// 		Hash:   block.Header.Hash(),
+// 		Header: block.Header.AsOptional(),
+// 		//Body: block.Body.AsOptional(),
+// 		Body:          optional.NewBody(false, nil),
+// 		Receipt:       optional.NewBytes(false, nil),
+// 		MessageQueue:  optional.NewBytes(false, nil),
+// 		Justification: optional.NewBytes(false, nil),
+// 	}
+// 	_, err = syncer.executeBlockData(bd)
+// 	require.NoError(t, err)
+// }

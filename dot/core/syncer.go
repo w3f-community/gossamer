@@ -448,25 +448,25 @@ func (s *Syncer) executeBlockBytes(bd []byte) ([]byte, error) {
 	return s.runtime.Exec(runtime.CoreExecuteBlock, bd)
 }
 
-// runs the block through runtime function Core_execute_block
-//  It doesn't seem to return data on success (although the spec say it should return
-//  a boolean value that indicate success.  will error if the call isn't successful
-func (s *Syncer) executeBlockData(block *types.BlockData) ([]byte, error) {
-	// copy block since we're going to modify it
-	h, err := types.NewHeaderFromOptional(block.Header)
-	if err != nil {
-		return nil, err
-	}
-	h.Digest = [][]byte{}
-	block.Header = h.AsOptional()
-	bdEnc, err := block.Encode()
-	if err != nil {
-		return nil, err
-	}
-	//bdEnc = append([]byte{0x10}, bdEnc...)
-	bdEnc = bdEnc[32:]
-	//block.Header = h
-	fmt.Println(block.Header)
-	fmt.Printf("0x%x\n", bdEnc)
-	return s.runtime.Exec(runtime.CoreExecuteBlock, bdEnc)
-}
+// // runs the block through runtime function Core_execute_block
+// //  It doesn't seem to return data on success (although the spec say it should return
+// //  a boolean value that indicate success.  will error if the call isn't successful
+// func (s *Syncer) executeBlockData(block *types.BlockData) ([]byte, error) {
+// 	// copy block since we're going to modify it
+// 	h, err := types.NewHeaderFromOptional(block.Header)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	h.Digest = [][]byte{}
+// 	block.Header = h.AsOptional()
+// 	bdEnc, err := block.Encode()
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	//bdEnc = append([]byte{0x10}, bdEnc...)
+// 	bdEnc = bdEnc[32:]
+// 	//block.Header = h
+// 	fmt.Println(block.Header)
+// 	fmt.Printf("0x%x\n", bdEnc)
+// 	return s.runtime.Exec(runtime.CoreExecuteBlock, bdEnc)
+// }
