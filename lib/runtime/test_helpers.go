@@ -32,6 +32,8 @@ import (
 	"github.com/ChainSafe/gossamer/lib/utils"
 	wasm "github.com/wasmerio/go-ext-wasm/wasmer"
 
+	log "github.com/ChainSafe/log15"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -189,12 +191,28 @@ func (trs TestRuntimeStorage) TrieAsString() string {
 
 // SetStorage is a dummy test func
 func (trs TestRuntimeStorage) SetStorage(key []byte, value []byte) error {
-	return trs.trie.Put(key, value)
+	//fmt.Println(trs.trie.String())
+
+	//log.Debug("[teststate] SetStorage", "key", fmt.Sprintf("0x%x", key), "val", fmt.Sprintf("0x%x", value))
+	err := trs.trie.Put(key, value)
+	if err != nil {
+		return err
+	}
+
+	val, err := trs.trie.Get(key)
+	log.Debug("[teststate] SetStorage", "key", fmt.Sprintf("0x%x", key), "val", fmt.Sprintf("0x%x", val))
+
+	fmt.Println(trs.trie.String())
+	return nil
 }
 
 // GetStorage is a dummy test func
 func (trs TestRuntimeStorage) GetStorage(key []byte) ([]byte, error) {
-	return trs.trie.Get(key)
+	val, err := trs.trie.Get(key)
+	log.Debug("[teststate] GetStorage", "key", fmt.Sprintf("0x%x", key), "val", fmt.Sprintf("0x%x", val))
+	fmt.Println(trs.trie.String())
+
+	return val, err
 }
 
 // StorageRoot is a dummy test func

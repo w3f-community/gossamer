@@ -89,6 +89,7 @@ func ext_malloc(context unsafe.Pointer, size int32) int32 {
 	if !ok {
 		panic(fmt.Sprintf("%#v", data))
 	}
+	fmt.Println(runtimeCtx.storage.(*TestRuntimeStorage).TrieAsString())
 
 	// Allocate memory
 	res, err := runtimeCtx.allocator.Allocate(uint32(size))
@@ -105,6 +106,7 @@ func ext_free(context unsafe.Pointer, addr int32) {
 	log.Trace("[ext_free] executing...", "addr", addr)
 	instanceContext := wasm.IntoInstanceContext(context)
 	runtimeCtx := instanceContext.Data().(*Ctx)
+	fmt.Println(runtimeCtx.storage.(*TestRuntimeStorage).TrieAsString())
 
 	// Deallocate memory
 	err := runtimeCtx.allocator.Deallocate(uint32(addr))
@@ -175,9 +177,11 @@ func ext_set_storage(context unsafe.Pointer, keyData, keyLen, valueData, valueLe
 
 	runtimeCtx := instanceContext.Data().(*Ctx)
 	s := runtimeCtx.storage
+	//fmt.Println(instanceContext.Data().(*Ctx).storage.(*TestRuntimeStorage).TrieAsString())
 
 	key := memory[keyData : keyData+keyLen]
 	val := memory[valueData : valueData+valueLen]
+	//copy(memory[valueData : valueData+valueLen], []byte{69, 69, 69, 69})
 	log.Trace("[ext_set_storage]", "key", fmt.Sprintf("0x%x", key), "val", val)
 	err := s.SetStorage(key, val)
 	if err != nil {
@@ -268,6 +272,8 @@ func ext_get_allocated_storage(context unsafe.Pointer, keyData, keyLen, writtenO
 	log.Trace("[ext_get_allocated_storage]", "key", fmt.Sprintf("0x%x", key))
 
 	val, err := s.GetStorage(key)
+	log.Trace("[ext_get_allocated_storage]", "val", fmt.Sprintf("0x%x", val))
+
 	if err != nil {
 		log.Error("[ext_get_allocated_storage]", "error", err)
 		copy(memory[writtenOut:writtenOut+4], []byte{0xff, 0xff, 0xff, 0xff})
@@ -297,19 +303,19 @@ func ext_get_allocated_storage(context unsafe.Pointer, keyData, keyLen, writtenO
 	// TODO: without the next lines, we often see `storage is not null, therefore must be a valid type` when calling
 	// initialize_block. determine why this is happening,
 
-	keyStr := fmt.Sprintf("0x%x", key)
+	//keyStr := fmt.Sprintf("0x%x", key)
 
-	// "Babe Initialized" || "Treasury Approvals" || "System Digest" || "Timestamp DidUpdate"
-	if keyStr == "0xe0410aa8e1aff5af1147fe2f9b33ce62" || keyStr == "0x3f60b9abbdf97ea5f6f2e132acee78a9" || keyStr == "0xf7787e54bb33faaf40a7f3bf438458ee" || keyStr == "0x5e21085b25d4293fe413b5d3a698068a" {
-		val[0] = 0
-	}
+	// // "Babe Initialized" || "Treasury Approvals" || "System Digest" || "Timestamp DidUpdate"
+	// if keyStr == "0xe0410aa8e1aff5af1147fe2f9b33ce62" || keyStr == "0x3f60b9abbdf97ea5f6f2e132acee78a9" || keyStr == "0xf7787e54bb33faaf40a7f3bf438458ee" || keyStr == "0x5e21085b25d4293fe413b5d3a698068a" {
+	// 	val[0] = 0
+	// }
 
 	// "RandomnessCollectiveFlip RandomMaterial" || "Staking CurrentEraPointsEarned"
-	if keyStr == "0xca263a1d57613bec1f68af5eb50a2d31" || keyStr == "0x9ef8d3fecf9615ad693470693c7fb7dd" || keyStr == "0x4fbfbfa5fc2e8c0a7265bcb04f86338f004320a0c2ed9d66fcee8e68b7595b7b" {
-		log.Trace("[ext_get_allocated_storage]", "value", "nil")
-		copy(memory[writtenOut:writtenOut+4], []byte{0xff, 0xff, 0xff, 0xff})
-		return 0
-	}
+	// if keyStr == "0xca263a1d57613bec1f68af5eb50a2d31" || keyStr == "0x9ef8d3fecf9615ad693470693c7fb7dd" || keyStr == "0x4fbfbfa5fc2e8c0a7265bcb04f86338f004320a0c2ed9d66fcee8e68b7595b7b" {
+	// 	log.Trace("[ext_get_allocated_storage]", "value", "nil")
+	// 	copy(memory[writtenOut:writtenOut+4], []byte{0xff, 0xff, 0xff, 0xff})
+	// 	return 0
+	// }
 
 	log.Trace("[ext_get_allocated_storage]", "value", fmt.Sprintf("0x%x", val))
 	copy(memory[ptr:ptr+uint32(len(val))], val)
@@ -339,6 +345,8 @@ func ext_clear_storage(context unsafe.Pointer, keyData, keyLen int32) {
 	if err != nil {
 		log.Error("[ext_storage_root]", "error", err)
 	}
+
+	log.Trace("[ext_clear_storage] cleared key", "key", key)
 }
 
 // deletes all entries in the trie that have a key beginning with the prefix stored at `prefixData`
@@ -410,7 +418,7 @@ func ext_blake2_256(context unsafe.Pointer, data, length, out int32) {
 	log.Trace("[ext_blake2_256] executing...")
 	instanceContext := wasm.IntoInstanceContext(context)
 	memory := instanceContext.Memory().Data()
-	log.Trace("[ext_blake2_256] hashing...", "data", fmt.Sprintf("0x%x", memory[data:data+length]))
+	log.Trace("[ext_blake2_256] hashing...", "data", fmt.Sprintf("%s", memory[data:data+length]))
 	hash, err := common.Blake2bHash(memory[data : data+length])
 	if err != nil {
 		log.Error("[ext_blake2_256]", "error", err)
@@ -469,8 +477,10 @@ func ext_twox_128(context unsafe.Pointer, data, len, out int32) {
 	log.Trace("[ext_twox_128] executing...")
 	instanceContext := wasm.IntoInstanceContext(context)
 	memory := instanceContext.Memory().Data()
+	//fmt.Println(instanceContext.Data().(*Ctx).storage.(*TestRuntimeStorage).TrieAsString())
 
 	log.Trace("[ext_twox_128] hashing...", "value", fmt.Sprintf("%s", memory[data:data+len]))
+	//fmt.Println(instanceContext.Data().(*Ctx).storage.(*TestRuntimeStorage).TrieAsString())
 
 	// compute xxHash64 twice with seeds 0 and 1 applied on given byte array
 	h0 := xxhash.NewS64(0) // create xxHash with 0 seed
@@ -497,6 +507,8 @@ func ext_twox_128(context unsafe.Pointer, data, len, out int32) {
 	both := append(hash0, hash1...)
 
 	copy(memory[out:out+16], both)
+	fmt.Println(instanceContext.Data().(*Ctx).storage.(*TestRuntimeStorage).TrieAsString())
+
 }
 
 //export ext_sr25519_generate

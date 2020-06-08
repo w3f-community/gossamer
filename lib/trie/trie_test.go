@@ -540,3 +540,19 @@ func TestDelete(t *testing.T) {
 		})
 	}
 }
+
+func TestPutAndGet_ExecuteBlock(t *testing.T) {
+	trie := NewEmptyTrie()
+
+	tests := []Test{
+		{key: common.MustHexToBytes("0x3a65787472696e7369635f696e646578"), value: common.MustHexToBytes("0x00000000"), op: PUT},
+		{key: common.MustHexToBytes("0x8cb577756012d928f17362e0741f9f2c"), value: common.MustHexToBytes("0x01000000"), op: PUT},
+		{key: common.MustHexToBytes("0xf7787e54bb33faaf40a7f3bf438458ee"), value: common.MustHexToBytes("0x00"), op: PUT},
+		{key: common.MustHexToBytes("0x3ae31af9a378162eb2736f26855c9ad8"), value: common.MustHexToBytes("0x44656d6f637261637920446973706174636851756575653236bc07b94fc6d3ea"), op: PUT},
+		{key: common.MustHexToBytes("0xf7787e54bb33faaf40a7f3bf438458ee"), value: common.MustHexToBytes("0x00"), op: GET},
+		{key: common.MustHexToBytes("0x3a65787472696e7369635f696e646578"), value: common.MustHexToBytes("0x00000000"), op: GET},
+		{key: common.MustHexToBytes("0x8cb577756012d928f17362e0741f9f2c"), value: common.MustHexToBytes("0x01000000"), op: GET},
+	}
+
+	runTests(t, trie, tests)
+}

@@ -609,7 +609,7 @@ func newBlockBuilder(t *testing.T, cfg *babe.SessionConfig) *babe.Session {
 func TestExecuteBlock_NoExtrinsics(t *testing.T) {
 	tt := trie.NewEmptyTrie()
 	rt := runtime.NewTestRuntimeWithTrie(t, runtime.NODE_RUNTIME, tt)
-
+	defer rt.Stop()
 	// // load authority into runtime
 	// kp, err := sr25519.GenerateKeypair()
 	// require.NoError(t, err)
@@ -642,8 +642,8 @@ func TestExecuteBlock_NoExtrinsics(t *testing.T) {
 	// parent, err := syncer.blockState.BestBlockHeader()
 	// require.NoError(t, err)
 
-	//parent := testGenesisHeader.DeepCopy()
-	//parent.StateRoot = tt.Hash()
+	parent := testGenesisHeader.DeepCopy()
+	parent.StateRoot, _ = tt.Hash()
 	//parent.Digest = [][]byte{{}}
 
 	// err := rt.InitializeBlock(parent)
@@ -666,21 +666,31 @@ func TestExecuteBlock_NoExtrinsics(t *testing.T) {
 	// 	}
 	// }
 
-	stateRoot, _ := common.HexToHash("0x0ef731c1d5124cbb8a13ff02171110ebd23a067d15491d5a73fca0b6b1efae7e")
+	//stateRoot, _ := common.HexToHash("0x0ef731c1d5124cbb8a13ff02171110ebd23a067d15491d5a73fca0b6b1efae7e")
 	extrinsicsRoot, _ := common.HexToHash("0x03170a2e7597b7b7e3d84c05391d139a62b157e78786d8c082f29dcf4c111314")
+	//parentHash, _ := common.HexToHash("0x44656d6f637261637920446973706174636851756575653236bc07b94fc6d3ea")
+	//parentHash := parent.Hash()
 
 	parentHash := common.Hash{69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69}
 	block := &types.Block{
 		Header: &types.Header{
 			//ParentHash: parent.Hash(),
+			//ParentHash:     common.Hash{},
 			ParentHash:     parentHash,
 			Number:         big.NewInt(1),
-			StateRoot:      stateRoot,
+			StateRoot:      trie.EmptyHash,
 			ExtrinsicsRoot: extrinsicsRoot,
 			Digest:         [][]byte{},
 		},
 		Body: &types.Body{},
 	}
+
+	// err := rt.InitializeBlock(block.Header)
+	// require.NoError(t, err)
+	// _, err = rt.ApplyExtrinsic([]byte{32, 4, 3, 0, 3, 98, 214, 215, 94})
+	// require.NoError(t, err)
+	// parent, err = rt.FinalizeBlock()
+	// require.NoError(t, err)
 
 	//require.NoError(t, err)
 	t.Log(block)

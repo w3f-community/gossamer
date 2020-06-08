@@ -233,21 +233,21 @@ func (b *Session) buildBlockInherents(slot Slot) error {
 	}
 
 	// add babeslot
-	err = idata.SetInt64Inherent(Babeslot, slot.number)
-	if err != nil {
-		return err
-	}
+	// err = idata.SetInt64Inherent(Babeslot, slot.number)
+	// if err != nil {
+	// 	return err
+	// }
 
 	// add finalnum
-	fin, err := b.blockState.GetFinalizedHeader()
-	if err != nil {
-		return err
-	}
+	// fin, err := b.blockState.GetFinalizedHeader()
+	// if err != nil {
+	// 	return err
+	// }
 
-	err = idata.SetBigIntInherent(Finalnum, fin.Number)
-	if err != nil {
-		return err
-	}
+	// err = idata.SetBigIntInherent(Finalnum, fin.Number)
+	// if err != nil {
+	// 	return err
+	// }
 
 	ienc, err := idata.Encode()
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/trie"
+	log "github.com/ChainSafe/log15"
 
 	database "github.com/ChainSafe/chaindb"
 )
@@ -100,7 +101,9 @@ func (s *StorageState) ExistsStorage(key []byte) (bool, error) {
 func (s *StorageState) GetStorage(key []byte) ([]byte, error) {
 	s.lock.RLock()
 	defer s.lock.RUnlock()
-	return s.trie.Get(key)
+	val, err := s.trie.Get(key)
+	log.Debug("[state] GetStorage", "key", fmt.Sprintf("0x%x", key), "val", fmt.Sprintf("0x%x", val))
+	return val, err
 }
 
 // StorageRoot returns the trie hash
@@ -120,6 +123,7 @@ func (s *StorageState) EnumeratedTrieRoot(values [][]byte) {
 func (s *StorageState) SetStorage(key []byte, value []byte) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	log.Debug("[state] SetStorage", "key", fmt.Sprintf("0x%x", key), "val", fmt.Sprintf("0x%x", value))
 	return s.trie.Put(key, value)
 }
 

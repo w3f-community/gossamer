@@ -370,18 +370,18 @@ func (b *Session) handleSlot(slotNum uint64) {
 	block, err := b.buildBlock(parent, currentSlot)
 	if err != nil {
 		log.Error("[babe] block authoring", "error", err)
-	} else {
-		// TODO: loop until slot is done, attempt to produce multiple blocks
+		return
+	}
 
-		hash := block.Header.Hash()
-		log.Info("[babe]", "built block", hash.String(), "number", block.Header.Number, "slot", slotNum)
-		log.Debug("[babe] built block", "header", block.Header, "body", block.Body, "parent", parent)
+	// TODO: loop until slot is done, attempt to produce multiple blocks
+	hash := block.Header.Hash()
+	log.Info("[babe]", "built block", hash.String(), "number", block.Header.Number, "slot", slotNum)
+	log.Debug("[babe] built block", "header", block.Header, "body", block.Body, "parent", parent)
 
-		err = b.safeSend(*block)
-		if err != nil {
-			log.Error("[babe] Failed to send block to core", "error", err)
-			return
-		}
+	err = b.safeSend(*block)
+	if err != nil {
+		log.Error("[babe] Failed to send block to core", "error", err)
+		return
 	}
 }
 

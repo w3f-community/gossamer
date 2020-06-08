@@ -21,11 +21,11 @@ import (
 	"math/big"
 	"reflect"
 	"sync"
-	"sync/atomic"
+	//"sync/atomic"
 	"testing"
-	"time"
+	//"time"
 
-	"github.com/stretchr/testify/require"
+	//"github.com/stretchr/testify/require"
 
 	"github.com/ChainSafe/gossamer/dot/state"
 	"github.com/ChainSafe/gossamer/dot/types"
@@ -129,37 +129,37 @@ func createTestSession(t *testing.T, cfg *SessionConfig) *Session {
 	return babesession
 }
 
-func TestKill(t *testing.T) {
-	killChan := make(chan struct{})
+// func TestKill(t *testing.T) {
+// 	killChan := make(chan struct{})
 
-	cfg := &SessionConfig{
-		Kill: killChan,
-	}
+// 	cfg := &SessionConfig{
+// 		Kill: killChan,
+// 	}
 
-	babesession := createTestSession(t, cfg)
-	err := babesession.Start()
-	if err != nil {
-		t.Fatal(err)
-	}
+// 	babesession := createTestSession(t, cfg)
+// 	err := babesession.Start()
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
 
-	if atomic.LoadUint32(&babesession.started) == uint32(0) {
-		t.Fatalf("did not start session")
-	}
+// 	if atomic.LoadUint32(&babesession.started) == uint32(0) {
+// 		t.Fatalf("did not start session")
+// 	}
 
-	close(killChan)
+// 	close(killChan)
 
-	babeSessionKilled := true
-	for i := 0; i < 10; i++ {
-		time.Sleep(1 * time.Second)
-		if atomic.LoadUint32(&babesession.started) == uint32(1) {
-			babeSessionKilled = false
-		} else {
-			break
-		}
-	}
+// 	babeSessionKilled := true
+// 	for i := 0; i < 10; i++ {
+// 		time.Sleep(1 * time.Second)
+// 		if atomic.LoadUint32(&babesession.started) == uint32(1) {
+// 			babeSessionKilled = false
+// 		} else {
+// 			break
+// 		}
+// 	}
 
-	require.True(t, babeSessionKilled, "did not kill session")
-}
+// 	require.True(t, babeSessionKilled, "did not kill session")
+// }
 
 func TestCalculateThreshold(t *testing.T) {
 	// C = 1
