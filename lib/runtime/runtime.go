@@ -66,11 +66,22 @@ func NewRuntime(code []byte, s Storage, ks *keystore.Keystore, registerImports f
 		return nil, err
 	}
 
-	// Instantiates the WebAssembly module.
-	instance, err := wasm.NewInstanceWithImports(code, imports)
+	// create module, which defines imports and exports
+	module, err := wasm.Compile(code)
 	if err != nil {
 		return nil, err
 	}
+
+	instance, err := module.InstantiateWithImports(imports)
+	if err != nil {
+		return nil, err
+	}
+
+	// Instantiates the WebAssembly module.
+	// instance, err := wasm.NewInstanceWithImports(code, imports)
+	// if err != nil {
+	// 	return nil, err
+	// }
 
 	//if !instance.HasMemory() {
 	if memErr != nil {
