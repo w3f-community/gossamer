@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"math/big"
+	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 
@@ -18,6 +20,19 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func Test_mock_execute_block(t *testing.T) {
+	fp, _ := filepath.Abs("test_wasm.wasm")
+	os.Remove(fp)
+
+	runtime := NewTestRuntime(t, TEST_RUNTIME)
+
+	testFunc, ok := runtime.vm.Exports["mock_execute_block"]
+	require.True(t, ok, "could not find exported function")
+
+	_, err := testFunc()
+	require.NoError(t, err)
+}
 
 // tests that the function ext_get_storage_into can retrieve a value from the trie
 // and store it in the wasm memory

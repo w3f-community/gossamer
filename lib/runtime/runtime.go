@@ -77,28 +77,20 @@ func NewRuntime(code []byte, s Storage, ks *keystore.Keystore, registerImports f
 		return nil, err
 	}
 
-	// Instantiates the WebAssembly module.
-	// instance, err := wasm.NewInstanceWithImports(code, imports)
-	// if err != nil {
-	// 	return nil, err
+	// if !instance.HasMemory() {
+	// 	if memErr != nil {
+	// 		return nil, err
+	// 	}
+
+	// 	instance.Memory = memory
 	// }
 
-	//if !instance.HasMemory() {
-	if memErr != nil {
-		return nil, err
-	}
-
-	instance.Memory = memory
-	//}
-
-	//instance.Memory.Grow(128)
-
-	mem2, err := wasm.NewMemory(1024, 0)
+	err = instance.Memory.Grow(100)
 	if err != nil {
 		return nil, err
 	}
 
-	memAllocator := NewAllocator(mem2, 0)
+	memAllocator := NewAllocator(memory, 0)
 
 	runtimeCtx := Ctx{
 		storage:   s,

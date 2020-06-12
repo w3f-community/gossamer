@@ -441,8 +441,6 @@ func (s *Syncer) executeBlock(block *types.Block) ([]byte, error) {
 		return nil, err
 	}
 
-	bdEnc = append([]byte{69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69, 69}, bdEnc...)
-
 	return s.runtime.Exec(runtime.CoreExecuteBlock, bdEnc)
 }
 
