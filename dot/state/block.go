@@ -141,6 +141,11 @@ func NewBlockStateFromGenesis(db chaindb.Database, header *types.Header) (*Block
 		return nil, err
 	}
 
+	err = bs.SetRound(0)
+	if err != nil {
+		return nil, err
+	}
+
 	return bs, nil
 }
 
@@ -203,6 +208,10 @@ func (bs *BlockState) HasHeader(hash common.Hash) (bool, error) {
 // GetHeader returns a BlockHeader for a given hash
 func (bs *BlockState) GetHeader(hash common.Hash) (*types.Header, error) {
 	result := new(types.Header)
+
+	if bs.db == nil {
+		return nil, fmt.Errorf("database is nil")
+	}
 
 	data, err := bs.db.Get(headerKey(hash))
 	if err != nil {
@@ -337,6 +346,16 @@ func (bs *BlockState) GetFinalizedHeader(round uint64) (*types.Header, error) {
 
 // GetFinalizedHash gets the latest finalized block header
 func (bs *BlockState) GetFinalizedHash(round uint64) (common.Hash, error) {
+	r, err := bs.GetRound()
+	if err != nil {
+		return common.Hash{}, err
+	}
+
+	// round that is being queried for has not yet finalized
+	if round > r {
+		return common.Hash{}, fmt.Errorf("round not yet finalized")
+	}
+
 	h, err := bs.db.Get(finalizedHashKey(round))
 	if err != nil {
 		return common.Hash{}, err
@@ -348,7 +367,33 @@ func (bs *BlockState) GetFinalizedHash(round uint64) (common.Hash, error) {
 // SetFinalizedHash sets the latest finalized block header
 func (bs *BlockState) SetFinalizedHash(hash common.Hash, round uint64) error {
 	go bs.notifyFinalized(hash)
+	if round > 0 {
+		err := bs.SetRound(round)
+		if err != nil {
+			return err
+		}
+	}
+
 	return bs.db.Put(finalizedHashKey(round), hash[:])
+}
+
+// SetRound sets the latest finalized GRANDPA round in the db
+// TODO: this needs to use both setID and round
+func (bs *BlockState) SetRound(round uint64) error {
+	buf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(buf, round)
+	return bs.db.Put(common.LatestFinalizedRoundKey, buf)
+}
+
+// GetRound gets the latest finalized GRANDPA round from the db
+func (bs *BlockState) GetRound() (uint64, error) {
+	r, err := bs.db.Get(common.LatestFinalizedRoundKey)
+	if err != nil {
+		return 0, err
+	}
+
+	round := binary.LittleEndian.Uint64(r)
+	return round, nil
 }
 
 // SetBlockBody will add a block body to the db
@@ -505,6 +550,10 @@ func (bs *BlockState) HighestBlockNumber() *big.Int {
 
 // BestBlockHash returns the hash of the head of the current chain
 func (bs *BlockState) BestBlockHash() common.Hash {
+	if bs.bt == nil {
+		return common.Hash{}
+	}
+
 	return bs.bt.DeepestBlockHash()
 }
 

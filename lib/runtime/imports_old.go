@@ -150,13 +150,13 @@ func ext_get_storage_into(context unsafe.Pointer, keyData, keyLen, valueData, va
 		ret := 1<<32 - 1
 		return int32(ret)
 	} else if val == nil {
-		logger.Warn("[ext_get_storage_into]", "err", "value is nil")
+		logger.Debug("[ext_get_storage_into]", "err", "value is nil")
 		ret := 1<<32 - 1
 		return int32(ret)
 	}
 
 	if len(val) > int(valueLen) {
-		logger.Warn("[ext_get_storage_into]", "error", "value exceeds allocated buffer length")
+		logger.Debug("[ext_get_storage_into]", "error", "value exceeds allocated buffer length")
 		return 0
 	}
 
@@ -248,7 +248,7 @@ func ext_storage_root(context unsafe.Pointer, resultPtr int32) {
 //export ext_storage_changes_root
 func ext_storage_changes_root(context unsafe.Pointer, a, b, c int32) int32 {
 	logger.Trace("[ext_storage_changes_root] executing...")
-	logger.Warn("[ext_storage_changes_root] Not yet implemented.")
+	logger.Debug("[ext_storage_changes_root] Not yet implemented.")
 	return 0
 }
 

@@ -45,6 +45,18 @@ var (
 	MinThreshold = big.NewInt(0)
 )
 
+// AuthorityData is an alias for []*types.BABEAuthorityData
+type AuthorityData []*types.BABEAuthorityData
+
+// String returns the AuthorityData as a formatted string
+func (d AuthorityData) String() string {
+	str := ""
+	for _, di := range []*types.BABEAuthorityData(d) {
+		str = str + fmt.Sprintf("[key=0x%x idx=%d] ", di.ID.Encode(), di.Weight)
+	}
+	return str
+}
+
 // Service contains the VRF keys for the validator, as well as BABE configuation data
 type Service struct {
 	logger log.Logger
@@ -86,7 +98,8 @@ type ServiceConfig struct {
 	Keypair          *sr25519.Keypair
 	Runtime          *runtime.Runtime
 	AuthData         []*types.BABEAuthorityData
-	EpochThreshold   *big.Int // should only be used for testing
+	EpochThreshold   *big.Int // for development purposes
+	SlotDuration     uint64   // for development purposes; in milliseconds
 	StartSlot        uint64   // slot to start at
 }
 
@@ -130,7 +143,12 @@ func NewService(cfg *ServiceConfig) (*Service, error) {
 		return nil, err
 	}
 
-	logger.Info("config", "SlotDuration (ms)", babeService.config.SlotDuration, "EpochLength (slots)", babeService.config.EpochLength)
+	// if slot duration is set via the config file, overwrite the runtime value
+	if cfg.SlotDuration > 0 {
+		babeService.config.SlotDuration = cfg.SlotDuration
+	}
+
+	logger.Info("config", "slot duration (ms)", babeService.config.SlotDuration, "epoch length (slots)", babeService.config.EpochLength)
 
 	if babeService.authorityData == nil {
 		logger.Info("setting authority data to genesis authorities", "authorities", babeService.config.GenesisAuthorities)
@@ -141,8 +159,7 @@ func NewService(cfg *ServiceConfig) (*Service, error) {
 		}
 	}
 
-	// TODO: format this
-	logger.Info("created BABE service", "authorities", babeService.authorityData)
+	logger.Info("created BABE service", "authorities", AuthorityData(babeService.authorityData))
 
 	babeService.randomness = babeService.config.Randomness
 
@@ -151,7 +168,7 @@ func NewService(cfg *ServiceConfig) (*Service, error) {
 		return nil, err
 	}
 
-	logger.Trace("created BABE service", "authority index", babeService.authorityIndex, "threshold", babeService.epochThreshold)
+	logger.Debug("created BABE service", "authority index", babeService.authorityIndex, "threshold", babeService.epochThreshold)
 
 	return babeService, nil
 }
@@ -178,7 +195,7 @@ func (b *Service) Start() error {
 		}
 	}
 
-	go b.invokeBlockAuthoring()
+	go b.initiate()
 	return nil
 }
 
@@ -192,7 +209,7 @@ func (b *Service) Pause() error {
 // Resume resumes the service ie. resumes block production
 func (b *Service) Resume() error {
 	b.started.Store(true)
-	go b.invokeBlockAuthoring()
+	go b.initiate()
 	b.logger.Info("service resumed")
 	return nil
 }
@@ -229,22 +246,13 @@ func (b *Service) GetBlockChannel() <-chan types.Block {
 	return b.blockChan
 }
 
-// Descriptor returns the NextEpochDescriptor for the current Service.
-func (b *Service) Descriptor() *NextEpochDescriptor {
-	return &NextEpochDescriptor{
-		Authorities: b.authorityData,
-		Randomness:  b.randomness,
+// Descriptor returns the EpochDescriptor for the current Service.
+func (b *Service) Descriptor() *EpochDescriptor {
+	return &EpochDescriptor{
+		AuthorityData: b.authorityData,
+		Randomness:    b.randomness,
+		Threshold:     b.epochThreshold,
 	}
-}
-
-func (b *Service) safeSend(msg types.Block) error {
-	b.lock.Lock()
-	defer b.lock.Unlock()
-	if !b.started.Load().(bool) {
-		return errors.New("Service has been stopped")
-	}
-	b.blockChan <- msg
-	return nil
 }
 
 // Authorities returns the current BABE authorities
@@ -264,10 +272,20 @@ func (b *Service) SetEpochData(data *NextEpochDescriptor) error {
 	return b.setAuthorityIndex()
 }
 
+func (b *Service) safeSend(msg types.Block) error {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+	if !b.started.Load().(bool) {
+		return errors.New("Service has been stopped")
+	}
+	b.blockChan <- msg
+	return nil
+}
+
 func (b *Service) setAuthorityIndex() error {
 	pub := b.keypair.Public()
 
-	b.logger.Debug("set authority index", "authority key", pub.Hex(), "authorities", b.authorityData)
+	b.logger.Debug("set authority index", "authority key", pub.Hex(), "authorities", AuthorityData(b.authorityData))
 
 	for i, auth := range b.authorityData {
 		if bytes.Equal(pub.Encode(), auth.ID.Encode()) {
@@ -283,7 +301,7 @@ func (b *Service) slotDuration() time.Duration {
 	return time.Duration(b.config.SlotDuration * 1000000) // SlotDuration in ms, time.Duration in ns
 }
 
-func (b *Service) invokeBlockAuthoring() {
+func (b *Service) initiate() {
 	if b.config == nil {
 		b.logger.Error("block authoring", "error", "config is nil")
 		return
@@ -327,8 +345,11 @@ func (b *Service) invokeBlockAuthoring() {
 	}
 
 	b.logger.Debug("[babe]", "calculated slot", slotNum)
+	b.invokeBlockAuthoring(slotNum)
+}
 
-	for ; slotNum < b.startSlot+b.config.EpochLength; slotNum++ {
+func (b *Service) invokeBlockAuthoring(startSlot uint64) {
+	for slotNum := startSlot; slotNum < startSlot+b.config.EpochLength; slotNum++ {
 		start := time.Now()
 
 		if time.Since(start) <= b.slotDuration() {
@@ -344,11 +365,28 @@ func (b *Service) invokeBlockAuthoring() {
 		}
 	}
 
-	// loop forever TODO: separate loop into another func
-	b.invokeBlockAuthoring()
+	// loop forever
+	// TODO: signal to verifier that epoch has changed
+	b.invokeBlockAuthoring(startSlot + b.config.EpochLength)
 }
 
 func (b *Service) handleSlot(slotNum uint64) {
+	if b.slotToProof[slotNum] == nil {
+		// if we don't have a proof already set, re-run lottery.
+		proof, err := b.runLottery(slotNum)
+		if err != nil {
+			b.logger.Warn("failed to run lottery", "slot", slotNum)
+			return
+		}
+
+		if proof == nil {
+			b.logger.Debug("not authorized to produce block", "slot", slotNum)
+			return
+		}
+
+		b.slotToProof[slotNum] = proof
+	}
+
 	parentHeader, err := b.blockState.BestBlockHeader()
 	if err != nil {
 		b.logger.Error("block authoring", "error", "parent header is nil")
@@ -375,7 +413,7 @@ func (b *Service) handleSlot(slotNum uint64) {
 
 	block, err := b.buildBlock(parent, currentSlot)
 	if err != nil {
-		b.logger.Error("block authoring", "error", err)
+		b.logger.Debug("block authoring", "error", err)
 	} else {
 		// TODO: loop until slot is done, attempt to produce multiple blocks
 
@@ -438,18 +476,18 @@ func (b *Service) setEpochThreshold() error {
 		return errors.New("cannot set threshold: no babe config")
 	}
 
-	b.epochThreshold, err = calculateThreshold(b.config.C1, b.config.C2, len(b.Authorities()))
+	b.epochThreshold, err = CalculateThreshold(b.config.C1, b.config.C2, len(b.Authorities()))
 	if err != nil {
 		return err
 	}
 
-	b.logger.Info("set epoch threshold", "threshold", b.epochThreshold.Bytes())
+	b.logger.Debug("set epoch threshold", "threshold", b.epochThreshold.Bytes())
 	return nil
 }
 
-// calculates the slot lottery threshold for the authority at authorityIndex.
+// CalculateThreshold calculates the slot lottery threshold
 // equation: threshold = 2^128 * (1 - (1-c)^(1/len(authorities))
-func calculateThreshold(C1, C2 uint64, numAuths int) (*big.Int, error) {
+func CalculateThreshold(C1, C2 uint64, numAuths int) (*big.Int, error) {
 	c := float64(C1) / float64(C2)
 	if c > 1 {
 		return nil, errors.New("invalid C1/C2: greater than 1")

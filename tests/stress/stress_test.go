@@ -68,7 +68,7 @@ func TestRestartNode(t *testing.T) {
 	err = utils.StartNodes(t, nodes)
 	require.NoError(t, err)
 
-	errList := utils.TearDown(t, nodes)
+	errList := utils.StopNodes(t, nodes)
 	require.Len(t, errList, 0)
 
 	err = utils.StartNodes(t, nodes)
@@ -92,19 +92,20 @@ func TestSync_Basic(t *testing.T) {
 }
 
 func TestSync_SingleBlockProducer(t *testing.T) {
-	numNodes = 9
+	numNodes = 6 // TODO: increase this when syncing improves
 	utils.SetLogLevel(log.LvlInfo)
 
 	// only log info from 1 node
 	tmpdir, err := ioutil.TempDir("", "gossamer-stress-sync")
 	require.NoError(t, err)
-	node, err := utils.RunGossamer(t, numNodes-1, tmpdir, utils.GenesisDefault, utils.ConfigBABEMaxThreshold)
+	defer os.Remove(tmpdir)
+	node, err := utils.RunGossamer(t, numNodes-1, tmpdir, utils.GenesisSixAuths, utils.ConfigBABEMaxThreshold)
 	require.NoError(t, err)
 
 	// wait and start rest of nodes - if they all start at the same time the first round usually doesn't complete since
 	// all nodes vote for different blocks.
-	time.Sleep(time.Second * 3)
-	nodes, err := utils.InitializeAndStartNodes(t, numNodes-1, utils.GenesisDefault, utils.ConfigNoBABE)
+	time.Sleep(time.Second * 5)
+	nodes, err := utils.InitializeAndStartNodes(t, numNodes-1, utils.GenesisSixAuths, utils.ConfigNoBABE)
 	require.NoError(t, err)
 	nodes = append(nodes, node)
 
@@ -117,7 +118,7 @@ func TestSync_SingleBlockProducer(t *testing.T) {
 	for i := 0; i < numCmps; i++ {
 		t.Log("comparing...", i)
 		err = compareBlocksByNumberWithRetry(t, nodes, strconv.Itoa(i))
-		require.NoError(t, err)
+		require.NoError(t, err, i)
 		time.Sleep(time.Second)
 	}
 }
