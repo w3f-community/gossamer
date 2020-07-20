@@ -238,6 +238,26 @@ func initAction(ctx *cli.Context) error {
 }
 
 func buildSpecAction(ctx *cli.Context) error {
-	fmt.Printf("BUILD SPEC")
+	lvl, err := setupLogger(ctx)
+	if err != nil {
+		logger.Error("failed to setup logger", "error", err)
+		return err
+	}
+
+	// todo determine if this needs full config
+	cfg, err := createInitConfig(ctx)
+	if err != nil {
+		logger.Error("failed to create node configuration", "error", err)
+		return err
+	}
+
+	cfg.Global.LogLevel = lvl.String()
+
+	// expand data directory and update node configuration (performed separately
+	// from createDotConfig because dot config should not include expanded path)
+	cfg.Global.BasePath = utils.ExpandDir(cfg.Global.BasePath)
+
+	ni := dot.BuildSpec(cfg.Global.BasePath)
+	fmt.Printf("BUILD SPEC %v\n", ni)
 	return nil
 }
