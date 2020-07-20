@@ -69,6 +69,17 @@ var (
 			"\tTo import a keystore file: gossamer account --import=path/to/file\n" +
 			"\tTo list keys: gossamer account --list",
 	}
+	// buildSpecCommand defines the "build-spec" subcommand (ie, `gossamer build-spec`)
+	buildSpecCommand = cli.Command{
+		Action:    FixFlagOrder(buildSpecAction),
+		Name:      "build-spec",
+		Usage:     "Build a spec.json file",
+		ArgsUsage: "",
+		Flags:     BuildSpecFlags,
+		Category:  "BUILD-SPEC",
+		Description: "The build-spec command builds a spec.json file.\n" +
+			"\tUsage: gossamer build-spec",
+	}
 )
 
 // init initializes the cli application
@@ -83,6 +94,7 @@ func init() {
 		exportCommand,
 		initCommand,
 		accountCommand,
+		buildSpecCommand,
 	}
 	app.Flags = RootFlags
 }
@@ -222,5 +234,10 @@ func initAction(ctx *cli.Context) error {
 		return err
 	}
 
+	return nil
+}
+
+func buildSpecAction(ctx *cli.Context) error {
+	fmt.Printf("BUILD SPEC")
 	return nil
 }

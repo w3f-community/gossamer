@@ -241,6 +241,9 @@ var (
 		GenesisHRFlag,
 	}, GlobalFlags...)
 
+	// BuildSpecFlags ore flags that are valid for use with build-spec subcommand
+	BuildSpecFlags = append([]cli.Flag{}, GlobalFlags...)
+
 	// ExportFlags are the flags that are valid for use with the export subcommand
 	ExportFlags = append([]cli.Flag{
 		ForceFlag,
