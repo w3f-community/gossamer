@@ -14,66 +14,62 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the gossamer library. If not, see <http://www.gnu.org/licenses/>.
 
-package core
+package sync
 
 import (
 	"math/big"
 
+	"github.com/ChainSafe/gossamer/dot/state"
 	"github.com/ChainSafe/gossamer/dot/types"
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/transaction"
-	"github.com/ChainSafe/gossamer/lib/trie"
 )
 
-// BlockState interface for block state methods
+// BlockState is the interface for the block state
 type BlockState interface {
 	BestBlockHash() common.Hash
-	BestBlockHeader() (*types.Header, error)
 	BestBlockNumber() (*big.Int, error)
-	BestBlock() (*types.Block, error)
-	SubChain(start, end common.Hash) ([]common.Hash, error)
 	AddBlock(*types.Block) error
-	GetAllBlocksAtDepth(hash common.Hash) []common.Hash
-	AddBlockWithArrivalTime(*types.Block, uint64) error
 	CompareAndSetBlockData(bd *types.BlockData) error
+	GetBlockByNumber(*big.Int) (*types.Block, error)
 	GetBlockBody(common.Hash) (*types.Body, error)
 	SetHeader(*types.Header) error
 	GetHeader(common.Hash) (*types.Header, error)
 	HasHeader(hash common.Hash) (bool, error)
+	SubChain(start, end common.Hash) ([]common.Hash, error)
 	GetReceipt(common.Hash) ([]byte, error)
 	GetMessageQueue(common.Hash) ([]byte, error)
 	GetJustification(common.Hash) ([]byte, error)
-	GetBlockByNumber(*big.Int) (*types.Block, error)
-	GetBlockByHash(common.Hash) (*types.Block, error)
-	GetArrivalTime(common.Hash) (uint64, error)
-	GenesisHash() common.Hash
-	GetSlotForBlock(common.Hash) (uint64, error)
-	HighestBlockHash() common.Hash
-	HighestBlockNumber() *big.Int
-	GetFinalizedHeader() (*types.Header, error)
 }
 
-// StorageState interface for storage state methods
+// StorageState is the interface for the storage state
 type StorageState interface {
-	StorageRoot() (common.Hash, error)
-	SetStorage([]byte, []byte) error
-	GetStorage([]byte) ([]byte, error)
-	StoreInDB() error
-	LoadCode() ([]byte, error)
-	LoadCodeHash() (common.Hash, error)
-	SetStorageChild([]byte, *trie.Trie) error
-	SetStorageIntoChild([]byte, []byte, []byte) error
-	GetStorageFromChild([]byte, []byte) ([]byte, error)
-	ClearStorage([]byte) error
-	Entries() map[string][]byte
-	SetBalance(key [32]byte, balance uint64) error
-	GetBalance(key [32]byte) (uint64, error)
+	TrieState(root *common.Hash) (*state.TrieState, error)
+	StoreTrie(root common.Hash, ts *state.TrieState) error
 }
 
 // TransactionQueue is the interface for transaction queue methods
 type TransactionQueue interface {
-	Push(vt *transaction.ValidTransaction) (common.Hash, error)
-	Pop() *transaction.ValidTransaction
-	Peek() *transaction.ValidTransaction
 	RemoveExtrinsic(ext types.Extrinsic)
+	Pop() *transaction.ValidTransaction
+	Push(vt *transaction.ValidTransaction) (common.Hash, error)
+	Peek() *transaction.ValidTransaction
+}
+
+// BlockProducer is the interface that a block production service must implement
+type BlockProducer interface {
+	Pause() error
+	Resume() error
+}
+
+// DigestHandler is the interface for the consensus digest handler
+type DigestHandler interface {
+	Start()
+	Stop()
+	HandleConsensusDigest(*types.ConsensusDigest) error
+}
+
+// Verifier deals with block verification
+type Verifier interface {
+	VerifyBlock(header *types.Header) (bool, error)
 }

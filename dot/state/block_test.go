@@ -24,12 +24,17 @@ import (
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/trie"
 
-	database "github.com/ChainSafe/chaindb"
+	"github.com/ChainSafe/chaindb"
 	"github.com/stretchr/testify/require"
 )
 
+var testGenesisHeader = &types.Header{
+	Number:    big.NewInt(0),
+	StateRoot: trie.EmptyHash,
+}
+
 func newTestBlockState(t *testing.T, header *types.Header) *BlockState {
-	db := database.NewMemDatabase()
+	db := chaindb.NewMemDatabase()
 	blockDb := NewBlockDB(db)
 
 	if header == nil {
@@ -78,14 +83,10 @@ func TestHasHeader(t *testing.T) {
 }
 
 func TestGetBlockByNumber(t *testing.T) {
-	genesisHeader := &types.Header{
-		Number: big.NewInt(0),
-	}
-
-	bs := newTestBlockState(t, genesisHeader)
+	bs := newTestBlockState(t, testGenesisHeader)
 
 	blockHeader := &types.Header{
-		ParentHash: genesisHeader.Hash(),
+		ParentHash: testGenesisHeader.Hash(),
 		Number:     big.NewInt(1),
 		Digest:     [][]byte{},
 	}
@@ -105,17 +106,13 @@ func TestGetBlockByNumber(t *testing.T) {
 }
 
 func TestAddBlock(t *testing.T) {
-	genesisHeader := &types.Header{
-		Number: big.NewInt(0),
-	}
-
-	bs := newTestBlockState(t, genesisHeader)
+	bs := newTestBlockState(t, testGenesisHeader)
 
 	// Create header
 	header0 := &types.Header{
 		Number:     big.NewInt(0),
 		Digest:     [][]byte{},
-		ParentHash: genesisHeader.Hash(),
+		ParentHash: testGenesisHeader.Hash(),
 	}
 	// Create blockHash
 	blockHash0 := header0.Hash()
@@ -178,12 +175,7 @@ func TestAddBlock(t *testing.T) {
 }
 
 func TestGetSlotForBlock(t *testing.T) {
-	genesisHeader := &types.Header{
-		Number:    big.NewInt(0),
-		StateRoot: trie.EmptyHash,
-	}
-
-	bs := newTestBlockState(t, genesisHeader)
+	bs := newTestBlockState(t, testGenesisHeader)
 
 	preDigest, err := common.HexToBytes("0x064241424538e93dcef2efc275b72b4fa748332dc4c9f13be1125909cf90c8e9109c45da16b04bc5fdf9fe06a4f35e4ae4ed7e251ff9ee3d0d840c8237c9fb9057442dbf00f210d697a7b4959f792a81b948ff88937e30bf9709a8ab1314f71284da89a40000000000000000001100000000000000")
 	require.NoError(t, err)
@@ -192,7 +184,7 @@ func TestGetSlotForBlock(t *testing.T) {
 
 	block := &types.Block{
 		Header: &types.Header{
-			ParentHash: genesisHeader.Hash(),
+			ParentHash: testGenesisHeader.Hash(),
 			Number:     big.NewInt(int64(1)),
 			Digest:     [][]byte{preDigest},
 		},
@@ -208,12 +200,7 @@ func TestGetSlotForBlock(t *testing.T) {
 }
 
 func TestIsBlockOnCurrentChain(t *testing.T) {
-	genesisHeader := &types.Header{
-		Number:    big.NewInt(0),
-		StateRoot: trie.EmptyHash,
-	}
-
-	bs := newTestBlockState(t, genesisHeader)
+	bs := newTestBlockState(t, testGenesisHeader)
 	currChain, branchChains := AddBlocksToState(t, bs, 8)
 
 	for _, header := range currChain {
@@ -236,12 +223,7 @@ func TestIsBlockOnCurrentChain(t *testing.T) {
 }
 
 func TestAddBlock_BlockNumberToHash(t *testing.T) {
-	genesisHeader := &types.Header{
-		Number:    big.NewInt(0),
-		StateRoot: trie.EmptyHash,
-	}
-
-	bs := newTestBlockState(t, genesisHeader)
+	bs := newTestBlockState(t, testGenesisHeader)
 	currChain, branchChains := AddBlocksToState(t, bs, 8)
 
 	bestHash := bs.BestBlockHash()
@@ -283,5 +265,76 @@ func TestAddBlock_BlockNumberToHash(t *testing.T) {
 
 	if resBlock.Header.Hash() != newBlock.Header.Hash() {
 		t.Fatalf("Fail: got %s expected %s for block %d", resBlock.Header.Hash(), newBlock.Header.Hash(), newBlock.Header.Number)
+	}
+}
+
+func TestFinalizedHash(t *testing.T) {
+	bs := newTestBlockState(t, testGenesisHeader)
+	h, err := bs.GetFinalizedHash(0, 0)
+	require.NoError(t, err)
+	require.Equal(t, testGenesisHeader.Hash(), h)
+
+	testhash := common.Hash{1, 2, 3, 4}
+	err = bs.SetFinalizedHash(testhash, 1, 1)
+	require.NoError(t, err)
+
+	h, err = bs.GetFinalizedHash(1, 1)
+	require.NoError(t, err)
+	require.Equal(t, testhash, h)
+}
+
+func TestLatestFinalizedRound(t *testing.T) {
+	bs := newTestBlockState(t, testGenesisHeader)
+	r, err := bs.GetRound()
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), r)
+
+	err = bs.SetRound(99)
+	require.NoError(t, err)
+	r, err = bs.GetRound()
+	require.NoError(t, err)
+	require.Equal(t, uint64(99), r)
+}
+
+func TestFinalization_DeleteBlock(t *testing.T) {
+	bs := newTestBlockState(t, testGenesisHeader)
+	all := bs.bt.GetAllBlocks()
+	AddBlocksToState(t, bs, 5)
+	leaves := bs.Leaves()
+
+	// pick block to finalize
+	fin := leaves[len(leaves)-1]
+	err := bs.SetFinalizedHash(fin, 1, 1)
+	require.NoError(t, err)
+
+	// assert that every block except finalized has been deleted
+	for _, b := range all {
+		if b == fin {
+			continue
+		}
+
+		has, err := bs.HasHeader(b)
+		require.NoError(t, err)
+		require.False(t, has)
+
+		has, err = bs.HasBlockBody(b)
+		require.NoError(t, err)
+		require.False(t, has)
+
+		has, err = bs.HasArrivalTime(b)
+		require.NoError(t, err)
+		require.False(t, has)
+
+		has, err = bs.HasReceipt(b)
+		require.NoError(t, err)
+		require.False(t, has)
+
+		has, err = bs.HasMessageQueue(b)
+		require.NoError(t, err)
+		require.False(t, has)
+
+		has, err = bs.HasJustification(b)
+		require.NoError(t, err)
+		require.False(t, has)
 	}
 }

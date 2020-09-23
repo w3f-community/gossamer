@@ -80,6 +80,7 @@ var encodeTests = []encodeTest{
 	{val: big.NewInt(1), output: []byte{0x04}, bytesEncoded: 1},
 	{val: big.NewInt(42), output: []byte{0xa8}, bytesEncoded: 1},
 	{val: big.NewInt(69), output: []byte{0x15, 0x01}, bytesEncoded: 2},
+	{val: big.NewInt(1000), output: []byte{0xa1, 0x0f}, bytesEncoded: 2},
 	{val: big.NewInt(16383), output: []byte{0xfd, 0xff}, bytesEncoded: 2},
 	{val: big.NewInt(16384), output: []byte{0x02, 0x00, 0x01, 0x00}, bytesEncoded: 4},
 	{val: big.NewInt(1073741823), output: []byte{0xfe, 0xff, 0xff, 0xff}, bytesEncoded: 4},
@@ -135,7 +136,6 @@ var encodeTests = []encodeTest{
 
 // Test strings for various values of n & mode. Also test strings with special characters
 func setUpStringTests() {
-
 	testString1 := "We love you! We believe in open source as wonderful form of giving."                           // n = 67
 	testString2 := strings.Repeat("We need a longer string to test with. Let's multiple this several times.", 230) // n = 72 * 230 = 16560
 	testString3 := "Let's test some special ASCII characters: ~  · © ÿ"                                           // n = 55 (UTF-8 encoding versus n = 51 with ASCII encoding)
@@ -182,7 +182,7 @@ func TestEncode(t *testing.T) {
 	for _, test := range encodeTests {
 
 		buffer := bytes.Buffer{}
-		se := Encoder{&buffer}
+		se := Encoder{Writer: &buffer}
 		bytesEncoded, err := se.Encode(test.val)
 		output := buffer.Bytes()
 

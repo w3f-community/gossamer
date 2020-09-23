@@ -21,6 +21,7 @@ import (
 	"math/rand"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/ChainSafe/gossamer/dot/state"
 	"github.com/ChainSafe/gossamer/dot/types"
@@ -30,6 +31,7 @@ import (
 	"github.com/ChainSafe/gossamer/lib/keystore"
 	"github.com/ChainSafe/gossamer/lib/trie"
 
+	log "github.com/ChainSafe/log15"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,13 +41,26 @@ var testGenesisHeader = &types.Header{
 	StateRoot: trie.EmptyHash,
 }
 
+var firstEpochInfo = &types.EpochInfo{
+	Duration:   200,
+	FirstBlock: 0,
+}
+
+var kr, _ = keystore.NewEd25519Keyring()
+
+type mockDigestHandler struct{}
+
+func (h *mockDigestHandler) NextGrandpaAuthorityChange() uint64 {
+	return 2 ^ 64 - 1
+}
+
 func newTestState(t *testing.T) *state.Service {
-	stateSrvc := state.NewService("")
+	stateSrvc := state.NewService("", log.LvlInfo)
 	stateSrvc.UseMemDB()
 
 	genesisData := new(genesis.Data)
 
-	err := stateSrvc.Initialize(genesisData, testGenesisHeader, trie.NewEmptyTrie())
+	err := stateSrvc.Initialize(genesisData, testGenesisHeader, trie.NewEmptyTrie(), firstEpochInfo)
 	require.NoError(t, err)
 
 	err = stateSrvc.Start()
@@ -54,10 +69,7 @@ func newTestState(t *testing.T) *state.Service {
 	return stateSrvc
 }
 
-func newTestVoters(t *testing.T) []*Voter {
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
+func newTestVoters() []*Voter {
 	voters := []*Voter{}
 	for i, k := range kr.Keys {
 		voters = append(voters, &Voter{
@@ -69,20 +81,49 @@ func newTestVoters(t *testing.T) []*Voter {
 	return voters
 }
 
-func TestGetDirectVotes(t *testing.T) {
+func newTestService(t *testing.T) (*Service, *state.Service) {
 	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
+	voters := newTestVoters()
 
 	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
+		BlockState:    st.Block,
+		DigestHandler: &mockDigestHandler{},
+		Voters:        voters,
+		Keypair:       kr.Alice().(*ed25519.Keypair),
+		Authority:     true,
 	}
 
 	gs, err := NewService(cfg)
 	require.NoError(t, err)
+
+	return gs, st
+}
+
+func TestUpdateAuthorities(t *testing.T) {
+	gs, _ := newTestService(t)
+	gs.UpdateAuthorities([]*types.Authority{
+		{Key: kr.Alice().Public().(*ed25519.PublicKey), Weight: 0},
+	})
+
+	err := gs.Start()
+	require.NoError(t, err)
+
+	time.Sleep(time.Second)
+	require.Equal(t, uint64(1), gs.state.setID)
+	require.Equal(t, []*Voter{
+		{key: kr.Alice().Public().(*ed25519.PublicKey), id: 0},
+	}, gs.state.voters)
+
+	gs.UpdateAuthorities([]*types.Authority{
+		{Key: kr.Alice().Public().(*ed25519.PublicKey), Weight: 0},
+	})
+
+	err = gs.Stop()
+	require.NoError(t, err)
+}
+
+func TestGetDirectVotes(t *testing.T) {
+	gs, _ := newTestService(t)
 
 	voteA := &Vote{
 		hash:   common.Hash{0xa},
@@ -111,19 +152,7 @@ func TestGetDirectVotes(t *testing.T) {
 }
 
 func TestGetVotesForBlock_NoDescendantVotes(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -156,19 +185,7 @@ func TestGetVotesForBlock_NoDescendantVotes(t *testing.T) {
 }
 
 func TestGetVotesForBlock_DescendantVotes(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -213,19 +230,7 @@ func TestGetVotesForBlock_DescendantVotes(t *testing.T) {
 }
 
 func TestGetPossibleSelectedAncestors_SameAncestor(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	// this creates a tree with 3 branches all starting at depth 6
 	branches := make(map[int]int)
@@ -274,19 +279,7 @@ func TestGetPossibleSelectedAncestors_SameAncestor(t *testing.T) {
 }
 
 func TestGetPossibleSelectedAncestors_VaryingAncestor(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	// this creates a tree with branches starting at depth 6 and another branch starting at depth 7
 	branches := make(map[int]int)
@@ -340,19 +333,7 @@ func TestGetPossibleSelectedAncestors_VaryingAncestor(t *testing.T) {
 }
 
 func TestGetPossibleSelectedAncestors_VaryingAncestor_MoreBranches(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	// this creates a tree with 1 branch starting at depth 6 and 2 branches starting at depth 7,
 	branches := make(map[int]int)
@@ -412,19 +393,7 @@ func TestGetPossibleSelectedAncestors_VaryingAncestor_MoreBranches(t *testing.T)
 }
 
 func TestGetPossibleSelectedBlocks_OneBlock(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -453,19 +422,7 @@ func TestGetPossibleSelectedBlocks_OneBlock(t *testing.T) {
 }
 
 func TestGetPossibleSelectedBlocks_EqualVotes_SameAncestor(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	// this creates a tree with 3 branches all starting at depth 6
 	branches := make(map[int]int)
@@ -507,19 +464,7 @@ func TestGetPossibleSelectedBlocks_EqualVotes_SameAncestor(t *testing.T) {
 }
 
 func TestGetPossibleSelectedBlocks_EqualVotes_VaryingAncestor(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	// this creates a tree with branches starting at depth 6 and another branch starting at depth 7
 	branches := make(map[int]int)
@@ -567,19 +512,7 @@ func TestGetPossibleSelectedBlocks_EqualVotes_VaryingAncestor(t *testing.T) {
 }
 
 func TestGetPossibleSelectedBlocks_OneThirdEquivocating(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -610,19 +543,7 @@ func TestGetPossibleSelectedBlocks_OneThirdEquivocating(t *testing.T) {
 }
 
 func TestGetPossibleSelectedBlocks_MoreThanOneThirdEquivocating(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -662,19 +583,7 @@ func TestGetPossibleSelectedBlocks_MoreThanOneThirdEquivocating(t *testing.T) {
 }
 
 func TestGetPreVotedBlock_OneBlock(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -702,19 +611,7 @@ func TestGetPreVotedBlock_OneBlock(t *testing.T) {
 }
 
 func TestGetPreVotedBlock_MultipleCandidates(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	// this creates a tree with branches starting at depth 6 and another branch starting at depth 7
 	branches := make(map[int]int)
@@ -756,19 +653,7 @@ func TestGetPreVotedBlock_MultipleCandidates(t *testing.T) {
 }
 
 func TestGetPreVotedBlock_EvenMoreCandidates(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	// this creates a tree with 6 total branches, one each from depth 3 to 7
 	branches := make(map[int]int)
@@ -831,19 +716,7 @@ func TestGetPreVotedBlock_EvenMoreCandidates(t *testing.T) {
 }
 
 func TestIsCompletable(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -871,19 +744,7 @@ func TestIsCompletable(t *testing.T) {
 }
 
 func TestFindParentWithNumber(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	// no branches needed
 	branches := make(map[int]int)
@@ -905,19 +766,7 @@ func TestFindParentWithNumber(t *testing.T) {
 
 func TestGetBestFinalCandidate_OneBlock(t *testing.T) {
 	// this tests the case when the prevoted block and the precommited block are the same
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -948,19 +797,7 @@ func TestGetBestFinalCandidate_OneBlock(t *testing.T) {
 
 func TestGetBestFinalCandidate_PrecommitAncestor(t *testing.T) {
 	// this tests the case when the highest precommited block is an ancestor of the prevoted block
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -996,19 +833,7 @@ func TestGetBestFinalCandidate_PrecommitAncestor(t *testing.T) {
 func TestGetBestFinalCandidate_NoPrecommit(t *testing.T) {
 	// this tests the case when no blocks have >=2/3 precommit votes
 	// it should return the prevoted block
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -1039,19 +864,7 @@ func TestGetBestFinalCandidate_NoPrecommit(t *testing.T) {
 func TestGetBestFinalCandidate_PrecommitOnAnotherChain(t *testing.T) {
 	// this tests the case when the precommited block is on another chain than the prevoted block
 	// this should return their highest common ancestor
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -1084,19 +897,7 @@ func TestGetBestFinalCandidate_PrecommitOnAnotherChain(t *testing.T) {
 }
 
 func TestDeterminePreVote_NoPrimaryPreVote(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	state.AddBlocksToState(t, st.Block, 3)
 	pv, err := gs.determinePreVote()
@@ -1108,19 +909,7 @@ func TestDeterminePreVote_NoPrimaryPreVote(t *testing.T) {
 }
 
 func TestDeterminePreVote_WithPrimaryPreVote(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	state.AddBlocksToState(t, st.Block, 3)
 	header, err := st.Block.BestBlockHeader()
@@ -1136,19 +925,7 @@ func TestDeterminePreVote_WithPrimaryPreVote(t *testing.T) {
 }
 
 func TestDeterminePreVote_WithInvalidPrimaryPreVote(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	state.AddBlocksToState(t, st.Block, 3)
 	header, err := st.Block.BestBlockHeader()
@@ -1167,19 +944,7 @@ func TestDeterminePreVote_WithInvalidPrimaryPreVote(t *testing.T) {
 }
 
 func TestIsFinalizable_True(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -1209,19 +974,7 @@ func TestIsFinalizable_True(t *testing.T) {
 }
 
 func TestIsFinalizable_False(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[2] = 1
@@ -1250,6 +1003,7 @@ func TestIsFinalizable_False(t *testing.T) {
 	gs.bestFinalCandidate[0] = &Vote{
 		number: 4,
 	}
+	gs.preVotedBlock[gs.state.round] = voteA
 
 	finalizable, err := gs.isFinalizable(gs.state.round)
 	require.NoError(t, err)
@@ -1257,19 +1011,7 @@ func TestIsFinalizable_False(t *testing.T) {
 }
 
 func TestGetGrandpaGHOST_CommonAncestor(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	branches := make(map[int]int)
 	branches[6] = 1
@@ -1300,19 +1042,7 @@ func TestGetGrandpaGHOST_CommonAncestor(t *testing.T) {
 }
 
 func TestGetGrandpaGHOST_MultipleCandidates(t *testing.T) {
-	st := newTestState(t)
-	voters := newTestVoters(t)
-	kr, err := keystore.NewEd25519Keyring()
-	require.NoError(t, err)
-
-	cfg := &Config{
-		BlockState: st.Block,
-		Voters:     voters,
-		Keypair:    kr.Alice,
-	}
-
-	gs, err := NewService(cfg)
-	require.NoError(t, err)
+	gs, st := newTestService(t)
 
 	// this creates a tree with branches starting at depth 3 and another branch starting at depth 7
 	branches := make(map[int]int)
@@ -1356,4 +1086,27 @@ func TestGetGrandpaGHOST_MultipleCandidates(t *testing.T) {
 	pv, err := gs.getPreVotedBlock()
 	require.NoError(t, err)
 	require.Equal(t, block, pv)
+}
+
+func TestGrandpa_NonAuthority(t *testing.T) {
+	if testing.Short() {
+		t.Skip()
+	}
+
+	gs, st := newTestService(t)
+	gs.authority = false
+	err := gs.Start()
+	require.NoError(t, err)
+
+	time.Sleep(time.Millisecond * 100)
+
+	state.AddBlocksToState(t, st.Block, 8)
+	head := st.Block.BestBlockHash()
+	err = st.Block.SetFinalizedHash(head, gs.state.round, gs.state.setID)
+	require.NoError(t, err)
+
+	time.Sleep(time.Millisecond * 100)
+
+	require.Equal(t, uint64(2), gs.state.round)
+	require.Equal(t, uint64(0), gs.state.setID)
 }

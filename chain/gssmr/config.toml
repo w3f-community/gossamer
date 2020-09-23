@@ -2,9 +2,19 @@
 name = "gssmr"
 id = "gssmr"
 basepath = "~/.gossamer/gssmr"
+log = "info"
+
+[log]
+core = ""
+network = ""
+rpc = ""
+state = ""
+runtime = ""
+babe = ""
+grandpa = ""
 
 [init]
-genesis = "./chain/gssmr/genesis.json"
+genesis-raw = "./chain/gssmr/genesis-raw.json"
 
 [account]
 key = ""
@@ -13,6 +23,9 @@ unlock = ""
 [core]
 authority = true
 roles = 4
+babe-authority = true
+grandpa-authority = true
+babe-threshold = ""
 
 [network]
 port = 7001

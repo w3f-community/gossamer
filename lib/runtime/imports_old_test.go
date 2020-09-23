@@ -17,7 +17,6 @@ import (
 	"github.com/ChainSafe/gossamer/lib/crypto/sr25519"
 	"github.com/ChainSafe/gossamer/lib/scale"
 	"github.com/ChainSafe/gossamer/lib/trie"
-
 	"github.com/stretchr/testify/require"
 )
 
@@ -44,7 +43,7 @@ func TestExt_get_storage_into(t *testing.T) {
 	// store kv pair in trie
 	key := []byte(":noot")
 	value := []byte{1, 3, 3, 7}
-	err := runtime.storage.SetStorage(key, value)
+	err := runtime.ctx.storage.Set(key, value)
 	require.Nil(t, err)
 
 	// copy key to position `keyData` in memory
@@ -104,7 +103,7 @@ func TestExt_set_storage(t *testing.T) {
 	require.Nil(t, err)
 
 	// make sure we can get the value from the trie
-	trieValue, err := runtime.storage.GetStorage(key)
+	trieValue, err := runtime.ctx.storage.Get(key)
 	require.Nil(t, err)
 
 	if !bytes.Equal(value, trieValue) {
@@ -121,7 +120,7 @@ func TestExt_storage_root(t *testing.T) {
 	mem := runtime.vm.Memory.Data()
 	// save result at `resultPtr` in memory
 	resultPtr := 170
-	hash, err := runtime.storage.StorageRoot()
+	hash, err := runtime.ctx.storage.Root()
 	require.Nil(t, err)
 
 	testFunc, ok := runtime.vm.Exports["test_ext_storage_root"]
@@ -205,7 +204,7 @@ func Test_ext_get_allocated_storage(t *testing.T) {
 	// put kv pair in trie
 	key := []byte(":noot")
 	value := []byte{1, 3, 3, 7}
-	err := runtime.storage.SetStorage(key, value)
+	err := runtime.ctx.storage.Set(key, value)
 	require.Nil(t, err)
 
 	// copy key to `keyData` in memory
@@ -253,7 +252,7 @@ func TestExt_clear_storage(t *testing.T) {
 	// save kv pair in trie
 	key := []byte(":noot")
 	value := []byte{1, 3, 3, 7}
-	err := runtime.storage.SetStorage(key, value)
+	err := runtime.ctx.storage.Set(key, value)
 	require.Nil(t, err)
 
 	// copy key to wasm memory
@@ -269,7 +268,7 @@ func TestExt_clear_storage(t *testing.T) {
 	require.Nil(t, err)
 
 	// make sure value is deleted
-	ret, err := runtime.storage.GetStorage(key)
+	ret, err := runtime.ctx.storage.Get(key)
 	require.Nil(t, err)
 
 	if ret != nil {
@@ -295,7 +294,7 @@ func TestExt_clear_prefix(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		e := runtime.storage.SetStorage(test.key, test.value)
+		e := runtime.ctx.storage.Set(test.key, test.value)
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -333,7 +332,7 @@ func TestExt_clear_prefix(t *testing.T) {
 	require.Nil(t, err)
 
 	// make sure entries with that prefix were deleted
-	runtimeTrieHash, err := runtime.storage.StorageRoot()
+	runtimeTrieHash, err := runtime.ctx.storage.Root()
 	require.Nil(t, err)
 
 	expectedHash, err := expectedTrie.Hash()
@@ -687,7 +686,7 @@ func TestExt_keccak_256(t *testing.T) {
 	require.Nil(t, err)
 
 	if !bytes.Equal(expected[:], mem[out:out+32]) {
-		t.Fatalf("fail: got %x expected %x", mem[out:out+32], expected)
+		t.Fatalf("fail: got %x expected %x", mem[out:out+32], expected[:])
 	}
 }
 
@@ -806,7 +805,7 @@ func TestExt_sr25519_generate(t *testing.T) {
 	pubkey, err := sr25519.NewPublicKey(pubkeyData)
 	require.Nil(t, err)
 
-	kp := runtime.keystore.Get(pubkey.Address())
+	kp := runtime.ctx.keystore.GetKeypair(pubkey)
 	if kp == nil {
 		t.Fatal("Fail: keypair was not saved in keystore")
 	}
@@ -844,7 +843,7 @@ func TestExt_ed25519_generate(t *testing.T) {
 	pubkey, err := ed25519.NewPublicKey(pubkeyData)
 	require.Nil(t, err)
 
-	kp := runtime.keystore.Get(pubkey.Address())
+	kp := runtime.ctx.keystore.GetKeypair(pubkey)
 	if kp == nil {
 		t.Fatal("Fail: keypair was not saved in keystore")
 	}
@@ -863,7 +862,7 @@ func TestExt_ed25519_public_keys(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		runtime.keystore.Insert(kp)
+		runtime.ctx.keystore.Insert(kp)
 		testKps = append(testKps, kp)
 		expected := testKps[i].Public().Encode()
 		expectedPubkeys = append(expectedPubkeys, expected)
@@ -875,7 +874,7 @@ func TestExt_ed25519_public_keys(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		runtime.keystore.Insert(kp)
+		runtime.ctx.keystore.Insert(kp)
 	}
 
 	mem := runtime.vm.Memory.Data()
@@ -924,7 +923,7 @@ func TestExt_sr25519_public_keys(t *testing.T) {
 		kp, err := sr25519.GenerateKeypair()
 		require.Nil(t, err)
 
-		runtime.keystore.Insert(kp)
+		runtime.ctx.keystore.Insert(kp)
 		testKps = append(testKps, kp)
 		expected := testKps[i].Public().Encode()
 		expectedPubkeys = append(expectedPubkeys, expected)
@@ -935,7 +934,7 @@ func TestExt_sr25519_public_keys(t *testing.T) {
 		kp, err := ed25519.GenerateKeypair()
 		require.Nil(t, err)
 
-		runtime.keystore.Insert(kp)
+		runtime.ctx.keystore.Insert(kp)
 	}
 
 	mem := runtime.vm.Memory.Data()
@@ -983,7 +982,7 @@ func TestExt_ed25519_sign(t *testing.T) {
 	kp, err := ed25519.GenerateKeypair()
 	require.Nil(t, err)
 
-	runtime.keystore.Insert(kp)
+	runtime.ctx.keystore.Insert(kp)
 
 	idLoc := 0
 	pubkeyLoc := 0
@@ -1028,7 +1027,7 @@ func TestExt_sr25519_sign(t *testing.T) {
 	kp, err := sr25519.GenerateKeypair()
 	require.Nil(t, err)
 
-	runtime.keystore.Insert(kp)
+	runtime.ctx.keystore.Insert(kp)
 
 	idLoc := 0
 	pubkeyLoc := 0
@@ -1075,10 +1074,10 @@ func TestExt_get_child_storage_into(t *testing.T) {
 	key := []byte("mykey")
 	value := []byte("myvalue")
 
-	err := runtime.storage.SetStorageChild(storageKey, trie.NewEmptyTrie())
+	err := runtime.ctx.storage.SetChild(storageKey, trie.NewEmptyTrie())
 	require.Nil(t, err)
 
-	err = runtime.storage.SetStorageIntoChild(storageKey, key, value)
+	err = runtime.ctx.storage.SetChildStorage(storageKey, key, value)
 	require.Nil(t, err)
 
 	storageKeyData := 0
@@ -1117,7 +1116,7 @@ func TestExt_set_child_storage(t *testing.T) {
 	key := []byte("mykey")
 	value := []byte("myvalue")
 
-	err := runtime.storage.SetStorageChild(storageKey, trie.NewEmptyTrie())
+	err := runtime.ctx.storage.SetChild(storageKey, trie.NewEmptyTrie())
 	require.Nil(t, err)
 
 	storageKeyData := 0
@@ -1140,10 +1139,146 @@ func TestExt_set_child_storage(t *testing.T) {
 	_, err = testFunc(storageKeyData, storageKeyLen, keyData, keyLen, valueData, valueLen)
 	require.Nil(t, err)
 
-	res, err := runtime.storage.GetStorageFromChild(storageKey, key)
+	res, err := runtime.ctx.storage.GetChildStorage(storageKey, key)
 	require.Nil(t, err)
 
 	if !bytes.Equal(res, value) {
 		t.Fatalf("Fail: got %x expected %x", res, value)
 	}
+}
+
+func TestExt_local_storage_set_local(t *testing.T) {
+	runtime := NewTestRuntime(t, TEST_RUNTIME)
+
+	mem := runtime.vm.Memory.Data()
+
+	key := []byte("mykey")
+	value := []byte("myvalue")
+
+	keyPtr := 0
+	keyLen := len(key)
+	valuePtr := keyPtr + keyLen
+	valueLen := len(value)
+
+	copy(mem[keyPtr:keyPtr+keyLen], key)
+	copy(mem[valuePtr:valuePtr+valueLen], value)
+
+	// call wasm function
+	testFunc, ok := runtime.vm.Exports["test_ext_local_storage_set"]
+	if !ok {
+		t.Fatal("could not find exported function")
+	}
+
+	_, err := testFunc(NodeStorageTypeLocal, keyPtr, keyLen, valuePtr, valueLen)
+	require.NoError(t, err)
+
+	resValue, err := runtime.ctx.nodeStorage.LocalStorage.Get(key)
+	require.NoError(t, err)
+	require.Equal(t, value, resValue)
+}
+
+func TestExt_local_storage_set_persistent(t *testing.T) {
+	runtime := NewTestRuntime(t, TEST_RUNTIME)
+
+	mem := runtime.vm.Memory.Data()
+
+	key := []byte("mykey")
+	value := []byte("myvalue")
+
+	keyPtr := 0
+	keyLen := len(key)
+	valuePtr := keyPtr + keyLen
+	valueLen := len(value)
+
+	copy(mem[keyPtr:keyPtr+keyLen], key)
+	copy(mem[valuePtr:valuePtr+valueLen], value)
+
+	// call wasm function
+	testFunc, ok := runtime.vm.Exports["test_ext_local_storage_set"]
+	if !ok {
+		t.Fatal("could not find exported function")
+	}
+
+	_, err := testFunc(NodeStorageTypePersistent, keyPtr, keyLen, valuePtr, valueLen)
+	require.NoError(t, err)
+
+	resValue, err := runtime.ctx.nodeStorage.PersistentStorage.Get(key)
+	require.NoError(t, err)
+	require.Equal(t, value, resValue)
+}
+
+func TestExt_local_storage_get_local(t *testing.T) {
+	runtime := NewTestRuntime(t, TEST_RUNTIME)
+	mem := runtime.vm.Memory.Data()
+
+	key := []byte("mykey")
+	value := []byte("myvalue")
+	runtime.ctx.nodeStorage.LocalStorage.Put(key, value)
+
+	keyPtr := 0
+	keyLen := len(key)
+	valueLen := len(value)
+
+	copy(mem[keyPtr:keyPtr+keyLen], key)
+
+	// call wasm function
+	testFunc, ok := runtime.vm.Exports["test_ext_local_storage_get"]
+	if !ok {
+		t.Fatal("could not find exported function")
+	}
+
+	res, err := testFunc(NodeStorageTypeLocal, keyPtr, keyLen, valueLen)
+	require.Nil(t, err)
+
+	require.Equal(t, value, mem[res.ToI32():res.ToI32()+int32(valueLen)])
+}
+
+func TestExt_local_storage_get_persistent(t *testing.T) {
+	runtime := NewTestRuntime(t, TEST_RUNTIME)
+	mem := runtime.vm.Memory.Data()
+
+	key := []byte("mykey")
+	value := []byte("myvalue")
+	runtime.ctx.nodeStorage.PersistentStorage.Put(key, value)
+
+	keyPtr := 0
+	keyLen := len(key)
+	valueLen := len(value)
+
+	copy(mem[keyPtr:keyPtr+keyLen], key)
+
+	// call wasm function
+	testFunc, ok := runtime.vm.Exports["test_ext_local_storage_get"]
+	if !ok {
+		t.Fatal("could not find exported function")
+	}
+
+	res, err := testFunc(NodeStorageTypePersistent, keyPtr, keyLen, valueLen)
+	require.Nil(t, err)
+
+	require.Equal(t, value, mem[res.ToI32():res.ToI32()+int32(valueLen)])
+}
+
+func TestExt_is_validator(t *testing.T) {
+	// test with validator
+	runtime := NewTestRuntimeWithRole(t, TEST_RUNTIME, byte(4))
+	// call wasm function
+	testFunc, ok := runtime.vm.Exports["test_ext_is_validator"]
+	if !ok {
+		t.Fatal("could not find exported function")
+	}
+	res, err := testFunc()
+	require.NoError(t, err)
+	require.Equal(t, int32(1), res.ToI32())
+
+	// test with non-validator
+	runtime = NewTestRuntimeWithRole(t, TEST_RUNTIME, byte(1))
+	// call wasm function
+	testFunc, ok = runtime.vm.Exports["test_ext_is_validator"]
+	if !ok {
+		t.Fatal("could not find exported function")
+	}
+	res, err = testFunc()
+	require.NoError(t, err)
+	require.Equal(t, int32(0), res.ToI32())
 }

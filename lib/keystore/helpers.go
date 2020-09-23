@@ -122,41 +122,50 @@ func GenerateKeypair(keytype string, kp crypto.Keypair, basepath string, passwor
 }
 
 // LoadKeystore loads a new keystore and inserts the test key into the keystore
-func LoadKeystore(key string) (*Keystore, error) {
-	ks := NewKeystore()
-
+func LoadKeystore(key string, ks Keystore) error {
 	if key != "" {
 
-		kr, err := NewSr25519Keyring()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create keyring: %s", err)
+		var kr Keyring
+		var err error
+
+		switch ks.Type() {
+		case crypto.Ed25519Type:
+			kr, err = NewEd25519Keyring()
+			if err != nil {
+				return fmt.Errorf("failed to create keyring: %s", err)
+			}
+		default:
+			kr, err = NewSr25519Keyring()
+			if err != nil {
+				return fmt.Errorf("failed to create keyring: %s", err)
+			}
 		}
 
 		switch strings.ToLower(key) {
 		case "alice":
-			ks.Insert(kr.Alice)
+			ks.Insert(kr.Alice())
 		case "bob":
-			ks.Insert(kr.Bob)
+			ks.Insert(kr.Bob())
 		case "charlie":
-			ks.Insert(kr.Charlie)
+			ks.Insert(kr.Charlie())
 		case "dave":
-			ks.Insert(kr.Dave)
+			ks.Insert(kr.Dave())
 		case "eve":
-			ks.Insert(kr.Eve)
+			ks.Insert(kr.Eve())
 		case "ferdie":
-			ks.Insert(kr.Ferdie)
+			ks.Insert(kr.Ferdie())
 		case "george":
-			ks.Insert(kr.George)
+			ks.Insert(kr.George())
 		case "heather":
-			ks.Insert(kr.Heather)
+			ks.Insert(kr.Heather())
 		case "ian":
-			ks.Insert(kr.Ian)
+			ks.Insert(kr.Ian())
 		default:
-			return nil, fmt.Errorf("invalid test key provided")
+			return fmt.Errorf("invalid test key provided")
 		}
 	}
 
-	return ks, nil
+	return nil
 }
 
 // ImportKeypair imports a key specified by its filename into a subdirectory
@@ -223,7 +232,7 @@ func ImportRawPrivateKey(key, keytype, basepath string, password []byte) (string
 
 // UnlockKeys unlocks keys specified by the --unlock flag with the passwords given by --password
 // and places them into the keystore
-func UnlockKeys(ks *Keystore, dir string, unlock string, password string) error {
+func UnlockKeys(ks Keystore, dir string, unlock string, password string) error {
 	var indices []int
 	var passwords []string
 	var err error
@@ -303,12 +312,12 @@ func DetermineKeyType(t string) crypto.KeyType {
 	case "dumy":
 		return crypto.Sr25519Type
 	}
-	return "unknown keytype"
+	return crypto.UnknownType
 }
 
 // HasKey returns true if given hex encoded public key string is found in keystore, false otherwise, error if there
 //  are issues decoding string
-func HasKey(pubKeyStr string, keyType string, keystore *Keystore) (bool, error) {
+func HasKey(pubKeyStr string, keyType string, keystore Keystore) (bool, error) {
 	keyBytes, err := common.HexToBytes(pubKeyStr)
 	if err != nil {
 		return false, err
@@ -329,6 +338,6 @@ func HasKey(pubKeyStr string, keyType string, keystore *Keystore) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	key := keystore.Get(pubKey.Address())
+	key := keystore.GetKeypairFromAddress(pubKey.Address())
 	return key != nil, nil
 }

@@ -37,7 +37,10 @@ func newEmptyLeafMap() *leafMap {
 
 func newLeafMap(n *node) *leafMap {
 	smap := &sync.Map{}
-	smap.Store(n.hash, n)
+	for _, child := range n.getLeaves(nil) {
+		smap.Store(child.hash, child)
+	}
+
 	return &leafMap{
 		smap: smap,
 	}
@@ -70,6 +73,10 @@ func (ls *leafMap) deepestLeaf() *node {
 	var dLeaf *node
 	ls.smap.Range(func(h, n interface{}) bool {
 		node := n.(*node)
+		if node == nil {
+			return true
+		}
+
 		if max.Cmp(node.depth) < 0 {
 			max = node.depth
 			dLeaf = node
@@ -94,4 +101,16 @@ func (ls *leafMap) toMap() map[common.Hash]*node {
 	})
 
 	return mmap
+}
+
+func (ls *leafMap) nodes() []*node {
+	nodes := []*node{}
+
+	ls.smap.Range(func(h, n interface{}) bool {
+		node := n.(*node)
+		nodes = append(nodes, node)
+		return true
+	})
+
+	return nodes
 }

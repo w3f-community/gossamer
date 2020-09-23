@@ -20,6 +20,7 @@ import (
 	"io/ioutil"
 	"testing"
 
+	"github.com/ChainSafe/gossamer/chain/gssmr"
 	"github.com/ChainSafe/gossamer/dot"
 	"github.com/ChainSafe/gossamer/dot/state"
 	"github.com/ChainSafe/gossamer/lib/genesis"
@@ -45,6 +46,18 @@ func TestConfigFromChainFlag(t *testing.T) {
 	testApp := cli.NewApp()
 	testApp.Writer = ioutil.Discard
 
+	gssmrCfg := dot.GssmrConfig()
+	gssmrCfg.Log = dot.LogConfig{
+		CoreLvl:           gssmr.DefaultLvl,
+		SyncLvl:           gssmr.DefaultLvl,
+		NetworkLvl:        gssmr.DefaultLvl,
+		RPCLvl:            gssmr.DefaultLvl,
+		StateLvl:          gssmr.DefaultLvl,
+		RuntimeLvl:        gssmr.DefaultLvl,
+		BlockProducerLvl:  gssmr.DefaultLvl,
+		FinalityGadgetLvl: gssmr.DefaultLvl,
+	}
+
 	testcases := []struct {
 		description string
 		flags       []string
@@ -55,7 +68,7 @@ func TestConfigFromChainFlag(t *testing.T) {
 			"Test gossamer --chain gssmr",
 			[]string{"chain"},
 			[]interface{}{"gssmr"},
-			dot.GssmrConfig(),
+			gssmrCfg,
 		},
 		{
 			"Test gossamer --chain ksmcc",
@@ -95,11 +108,12 @@ func TestInitConfigFromFlags(t *testing.T) {
 		expected    dot.InitConfig
 	}{
 		{
-			"Test gossamer --genesis",
-			[]string{"config", "genesis"},
+			"Test gossamer --genesis-raw",
+			[]string{"config", "genesis-raw"},
 			[]interface{}{testCfgFile.Name(), "test_genesis"},
 			dot.InitConfig{
-				Genesis: "test_genesis",
+				GenesisRaw:     "test_genesis",
+				TestFirstEpoch: true,
 			},
 		},
 	}
@@ -111,7 +125,6 @@ func TestInitConfigFromFlags(t *testing.T) {
 			require.Nil(t, err)
 			cfg, err := createInitConfig(ctx)
 			require.Nil(t, err)
-
 			require.Equal(t, c.expected, cfg.Init)
 		})
 	}
@@ -142,6 +155,7 @@ func TestGlobalConfigFromFlags(t *testing.T) {
 				Name:     testCfg.Global.Name,
 				ID:       testCfg.Global.ID,
 				BasePath: testCfg.Global.BasePath,
+				LogLevel: "info",
 			},
 		},
 		{
@@ -152,6 +166,7 @@ func TestGlobalConfigFromFlags(t *testing.T) {
 				Name:     testCfg.Global.Name,
 				ID:       "ksmcc",
 				BasePath: testCfg.Global.BasePath,
+				LogLevel: "info",
 			},
 		},
 		{
@@ -162,6 +177,7 @@ func TestGlobalConfigFromFlags(t *testing.T) {
 				Name:     "test_name",
 				ID:       testCfg.Global.ID,
 				BasePath: testCfg.Global.BasePath,
+				LogLevel: "info",
 			},
 		},
 		{
@@ -172,6 +188,7 @@ func TestGlobalConfigFromFlags(t *testing.T) {
 				Name:     testCfg.Global.Name,
 				ID:       testCfg.Global.ID,
 				BasePath: "test_basepath",
+				LogLevel: "info",
 			},
 		},
 		{
@@ -182,6 +199,7 @@ func TestGlobalConfigFromFlags(t *testing.T) {
 				Name:     testCfg.Global.Name,
 				ID:       testCfg.Global.ID,
 				BasePath: testCfg.Global.BasePath,
+				LogLevel: "info",
 			},
 		},
 	}
@@ -270,8 +288,10 @@ func TestCoreConfigFromFlags(t *testing.T) {
 			[]string{"config", "roles"},
 			[]interface{}{testCfgFile.Name(), "4"},
 			dot.CoreConfig{
-				Authority: true,
-				Roles:     4,
+				Authority:        true,
+				Roles:            4,
+				BabeAuthority:    true,
+				GrandpaAuthority: true,
 			},
 		},
 		{
@@ -279,8 +299,10 @@ func TestCoreConfigFromFlags(t *testing.T) {
 			[]string{"config", "roles"},
 			[]interface{}{testCfgFile.Name(), "0"},
 			dot.CoreConfig{
-				Authority: false,
-				Roles:     0,
+				Authority:        false,
+				Roles:            0,
+				BabeAuthority:    false,
+				GrandpaAuthority: false,
 			},
 		},
 	}
@@ -521,13 +543,13 @@ func TestRPCConfigFromFlags(t *testing.T) {
 // TestUpdateConfigFromGenesisJSON tests updateDotConfigFromGenesisJSON
 func TestUpdateConfigFromGenesisJSON(t *testing.T) {
 	testCfg, testCfgFile := dot.NewTestConfigWithFile(t)
-	genFile := dot.NewTestGenesisFile(t, testCfg)
+	genFile := dot.NewTestGenesisRawFile(t, testCfg)
 
 	defer utils.RemoveTestDir(t)
 
 	ctx, err := newTestContext(
 		t.Name(),
-		[]string{"config", "genesis"},
+		[]string{"config", "genesis-raw"},
 		[]interface{}{testCfgFile.Name(), genFile.Name()},
 	)
 	require.Nil(t, err)
@@ -537,9 +559,21 @@ func TestUpdateConfigFromGenesisJSON(t *testing.T) {
 			Name:     testCfg.Global.Name,
 			ID:       testCfg.Global.ID,
 			BasePath: testCfg.Global.BasePath,
+			LogLevel: testCfg.Global.LogLevel,
+		},
+		Log: dot.LogConfig{
+			CoreLvl:           "info",
+			SyncLvl:           "info",
+			NetworkLvl:        "info",
+			RPCLvl:            "info",
+			StateLvl:          "info",
+			RuntimeLvl:        "info",
+			BlockProducerLvl:  "info",
+			FinalityGadgetLvl: "info",
 		},
 		Init: dot.InitConfig{
-			Genesis: genFile.Name(),
+			GenesisRaw:     genFile.Name(),
+			TestFirstEpoch: true,
 		},
 		Account: testCfg.Account,
 		Core:    testCfg.Core,
@@ -551,9 +585,10 @@ func TestUpdateConfigFromGenesisJSON(t *testing.T) {
 	cfg, err := createDotConfig(ctx)
 	require.Nil(t, err)
 
-	cfg.Init.Genesis = genFile.Name()
+	cfg.Init.GenesisRaw = genFile.Name()
+	expected.Core.BabeThreshold = nil
 
-	updateDotConfigFromGenesisJSON(ctx, cfg)
+	updateDotConfigFromGenesisJSONRaw(ctx, cfg)
 
 	require.Equal(t, expected, cfg)
 }
@@ -568,7 +603,7 @@ func TestUpdateConfigFromGenesisJSON_Default(t *testing.T) {
 
 	ctx, err := newTestContext(
 		t.Name(),
-		[]string{"config", "genesis"},
+		[]string{"config", "genesis-raw"},
 		[]interface{}{testCfgFile.Name(), ""},
 	)
 	require.Nil(t, err)
@@ -578,9 +613,21 @@ func TestUpdateConfigFromGenesisJSON_Default(t *testing.T) {
 			Name:     testCfg.Global.Name,
 			ID:       testCfg.Global.ID,
 			BasePath: testCfg.Global.BasePath,
+			LogLevel: testCfg.Global.LogLevel,
+		},
+		Log: dot.LogConfig{
+			CoreLvl:           "info",
+			SyncLvl:           "info",
+			NetworkLvl:        "info",
+			RPCLvl:            "info",
+			StateLvl:          "info",
+			RuntimeLvl:        "info",
+			BlockProducerLvl:  "info",
+			FinalityGadgetLvl: "info",
 		},
 		Init: dot.InitConfig{
-			Genesis: DefaultCfg.Init.Genesis,
+			GenesisRaw:     DefaultCfg.Init.GenesisRaw,
+			TestFirstEpoch: true,
 		},
 		Account: testCfg.Account,
 		Core:    testCfg.Core,
@@ -589,17 +636,19 @@ func TestUpdateConfigFromGenesisJSON_Default(t *testing.T) {
 		System:  testCfg.System,
 	}
 
+	expected.Core.BabeThreshold = nil
+
 	cfg, err := createDotConfig(ctx)
 	require.Nil(t, err)
 
-	updateDotConfigFromGenesisJSON(ctx, cfg)
+	updateDotConfigFromGenesisJSONRaw(ctx, cfg)
 
 	require.Equal(t, expected, cfg)
 }
 
 func TestUpdateConfigFromGenesisData(t *testing.T) {
 	testCfg, testCfgFile := dot.NewTestConfigWithFile(t)
-	genFile := dot.NewTestGenesisFile(t, testCfg)
+	genFile := dot.NewTestGenesisRawFile(t, testCfg)
 
 	defer utils.RemoveTestDir(t)
 
@@ -615,9 +664,21 @@ func TestUpdateConfigFromGenesisData(t *testing.T) {
 			Name:     testCfg.Global.Name,
 			ID:       testCfg.Global.ID,
 			BasePath: testCfg.Global.BasePath,
+			LogLevel: testCfg.Global.LogLevel,
+		},
+		Log: dot.LogConfig{
+			CoreLvl:           "info",
+			SyncLvl:           "info",
+			NetworkLvl:        "info",
+			RPCLvl:            "info",
+			StateLvl:          "info",
+			RuntimeLvl:        "info",
+			BlockProducerLvl:  "info",
+			FinalityGadgetLvl: "info",
 		},
 		Init: dot.InitConfig{
-			Genesis: genFile.Name(),
+			GenesisRaw:     genFile.Name(),
+			TestFirstEpoch: true,
 		},
 		Account: testCfg.Account,
 		Core:    testCfg.Core,
@@ -635,12 +696,13 @@ func TestUpdateConfigFromGenesisData(t *testing.T) {
 	cfg, err := createDotConfig(ctx)
 	require.Nil(t, err)
 
-	cfg.Init.Genesis = genFile.Name()
+	cfg.Init.GenesisRaw = genFile.Name()
+	expected.Core.BabeThreshold = nil
 
 	db, err := database.NewBadgerDB(cfg.Global.BasePath)
 	require.Nil(t, err)
 
-	gen, err := genesis.NewGenesisFromJSON(genFile.Name())
+	gen, err := genesis.NewGenesisFromJSONRaw(genFile.Name())
 	require.Nil(t, err)
 
 	err = state.StoreGenesisData(db, gen.GenesisData())

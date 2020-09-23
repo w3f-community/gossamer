@@ -12,6 +12,7 @@ import (
 	"github.com/ChainSafe/gossamer/lib/runtime"
 	"github.com/ChainSafe/gossamer/lib/transaction"
 	"github.com/ChainSafe/gossamer/lib/trie"
+	log "github.com/ChainSafe/log15"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,7 +24,7 @@ var testInvalidExt = []byte{1, 212, 53, 147, 199, 21, 253, 211, 28, 97, 20, 26, 
 
 func TestAuthorModule_Pending(t *testing.T) {
 	txQueue := state.NewTransactionQueue()
-	auth := NewAuthorModule(nil, nil, txQueue)
+	auth := NewAuthorModule(nil, nil, nil, txQueue)
 
 	res := new(PendingExtrinsicsResponse)
 	err := auth.PendingExtrinsics(nil, nil, res)
@@ -162,7 +163,7 @@ func TestAuthorModule_SubmitExtrinsic_InQueue(t *testing.T) {
 func TestAuthorModule_InsertKey_Valid(t *testing.T) {
 	cs := core.NewTestService(t, nil)
 
-	auth := NewAuthorModule(cs, nil, nil)
+	auth := NewAuthorModule(nil, cs, nil, nil)
 	req := &KeyInsertRequest{"babe", "0xb7e9185065667390d2ad952a5324e8c365c9bf503dcf97c67a5ce861afe97309", "0x6246ddf254e0b4b4e7dffefc8adf69d212b98ac2b579c362b473fec8c40b4c0a"}
 	res := &KeyInsertResponse{}
 	err := auth.InsertKey(nil, req, res)
@@ -174,7 +175,7 @@ func TestAuthorModule_InsertKey_Valid(t *testing.T) {
 func TestAuthorModule_InsertKey_Valid_gran_keytype(t *testing.T) {
 	cs := core.NewTestService(t, nil)
 
-	auth := NewAuthorModule(cs, nil, nil)
+	auth := NewAuthorModule(nil, cs, nil, nil)
 	req := &KeyInsertRequest{"gran", "0xb7e9185065667390d2ad952a5324e8c365c9bf503dcf97c67a5ce861afe97309b7e9185065667390d2ad952a5324e8c365c9bf503dcf97c67a5ce861afe97309", "0xb7e9185065667390d2ad952a5324e8c365c9bf503dcf97c67a5ce861afe97309"}
 	res := &KeyInsertResponse{}
 	err := auth.InsertKey(nil, req, res)
@@ -186,7 +187,7 @@ func TestAuthorModule_InsertKey_Valid_gran_keytype(t *testing.T) {
 func TestAuthorModule_InsertKey_InValid(t *testing.T) {
 	cs := core.NewTestService(t, nil)
 
-	auth := NewAuthorModule(cs, nil, nil)
+	auth := NewAuthorModule(nil, cs, nil, nil)
 	req := &KeyInsertRequest{"babe", "0xb7e9185065667390d2ad952a5324e8c365c9bf503dcf97c67a5ce861afe97309", "0x0000000000000000000000000000000000000000000000000000000000000000"}
 	res := &KeyInsertResponse{}
 	err := auth.InsertKey(nil, req, res)
@@ -196,7 +197,7 @@ func TestAuthorModule_InsertKey_InValid(t *testing.T) {
 func TestAuthorModule_InsertKey_UnknownKeyType(t *testing.T) {
 	cs := core.NewTestService(t, nil)
 
-	auth := NewAuthorModule(cs, nil, nil)
+	auth := NewAuthorModule(nil, cs, nil, nil)
 	req := &KeyInsertRequest{"mack", "0xb7e9185065667390d2ad952a5324e8c365c9bf503dcf97c67a5ce861afe97309", "0x6246ddf254e0b4b4e7dffefc8adf69d212b98ac2b579c362b473fec8c40b4c0a"}
 	res := &KeyInsertResponse{}
 	err := auth.InsertKey(nil, req, res)
@@ -210,7 +211,7 @@ func TestAuthorModule_HasKey(t *testing.T) {
 	require.Nil(t, err)
 
 	var res bool
-	req := []string{kr.Alice.Public().Hex(), "babe"}
+	req := []string{kr.Alice().Public().Hex(), "babe"}
 	err = auth.HasKey(nil, &req, &res)
 	require.NoError(t, err)
 	require.True(t, res)
@@ -222,7 +223,7 @@ func TestAuthorModule_HasKey_NotFound(t *testing.T) {
 	require.Nil(t, err)
 
 	var res bool
-	req := []string{kr.Bob.Public().Hex(), "babe"}
+	req := []string{kr.Bob().Public().Hex(), "babe"}
 	err = auth.HasKey(nil, &req, &res)
 	require.NoError(t, err)
 	require.False(t, res)
@@ -244,7 +245,7 @@ func TestAuthorModule_HasKey_InvalidKeyType(t *testing.T) {
 	require.Nil(t, err)
 
 	var res bool
-	req := []string{kr.Alice.Public().Hex(), "xxxx"}
+	req := []string{kr.Alice().Public().Hex(), "xxxx"}
 	err = auth.HasKey(nil, &req, &res)
 	require.EqualError(t, err, "unknown key type: xxxx")
 	require.False(t, res)
@@ -253,19 +254,19 @@ func TestAuthorModule_HasKey_InvalidKeyType(t *testing.T) {
 func newCoreService(t *testing.T) *core.Service {
 	// setup service
 	tt := trie.NewEmptyTrie()
-	rt := runtime.NewTestRuntimeWithTrie(t, runtime.NODE_RUNTIME, tt)
-	ks := keystore.NewKeystore()
+	rt := runtime.NewTestRuntimeWithTrie(t, runtime.NODE_RUNTIME, tt, log.LvlInfo)
+	ks := keystore.NewGlobalKeystore()
 
 	// insert alice key for testing
 	kr, err := keystore.NewSr25519Keyring()
 	require.NoError(t, err)
-	ks.Insert(kr.Alice)
+	ks.Acco.Insert(kr.Alice())
 
 	cfg := &core.Config{
 		Runtime:          rt,
 		Keystore:         ks,
 		TransactionQueue: transaction.NewPriorityQueue(),
-		IsBabeAuthority:  false,
+		IsBlockProducer:  false,
 	}
 
 	return core.NewTestService(t, cfg)
@@ -274,5 +275,5 @@ func newCoreService(t *testing.T) *core.Service {
 func setupAuthModule(t *testing.T, txq *state.TransactionQueue) *AuthorModule {
 	cs := newCoreService(t)
 	rt := runtime.NewTestRuntime(t, runtime.NODE_RUNTIME)
-	return NewAuthorModule(cs, rt, txq)
+	return NewAuthorModule(nil, cs, rt, txq)
 }

@@ -3,6 +3,7 @@ package modules
 import (
 	"math/big"
 
+	"github.com/ChainSafe/gossamer/dot/state"
 	"github.com/ChainSafe/gossamer/dot/types"
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/crypto"
@@ -12,17 +13,22 @@ import (
 
 // StorageAPI is the interface for the storage state
 type StorageAPI interface {
-	GetStorage(key []byte) ([]byte, error)
-	Entries() map[string][]byte
+	GetStorage(root *common.Hash, key []byte) ([]byte, error)
+	GetStorageByBlockHash(bhash common.Hash, key []byte) ([]byte, error)
+	Entries(root *common.Hash) (map[string][]byte, error)
+	RegisterStorageChangeChannel(ch chan<- *state.KeyValue) (byte, error)
+	UnregisterStorageChangeChannel(id byte)
 }
 
 // BlockAPI is the interface for the block state
 type BlockAPI interface {
 	GetHeader(hash common.Hash) (*types.Header, error)
-	HighestBlockHash() common.Hash
+	BestBlockHash() common.Hash
 	GetBlockByHash(hash common.Hash) (*types.Block, error)
 	GetBlockHash(blockNumber *big.Int) (*common.Hash, error)
-	SetBlockAddedChannel(chan<- *types.Block, <-chan struct{})
+	GetFinalizedHash(uint64, uint64) (common.Hash, error)
+	RegisterImportedChannel(ch chan<- *types.Block) (byte, error)
+	UnregisterImportedChannel(id byte)
 }
 
 // NetworkAPI interface for network state methods
@@ -31,6 +37,18 @@ type NetworkAPI interface {
 	NetworkState() common.NetworkState
 	Peers() []common.PeerInfo
 	NodeRoles() byte
+	Stop() error
+	Start() error
+	IsStopped() bool
+}
+
+// BlockProducerAPI is the interface for BlockProducer methods
+type BlockProducerAPI interface {
+	Pause() error
+	Resume() error
+	SetAuthorities(data []*types.Authority) error
+	SetRandomness([types.RandomnessLength]byte)
+	SetEpochThreshold(*big.Int)
 }
 
 // TransactionQueueAPI ...
@@ -46,7 +64,7 @@ type CoreAPI interface {
 	InsertKey(kp crypto.Keypair)
 	HasKey(pubKeyStr string, keyType string) (bool, error)
 	GetRuntimeVersion() (*runtime.VersionAPI, error)
-	IsBabeAuthority() bool
+	IsBlockProducer() bool
 	HandleSubmittedExtrinsic(types.Extrinsic) error
 	GetMetadata() ([]byte, error)
 }

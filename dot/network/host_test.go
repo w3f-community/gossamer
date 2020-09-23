@@ -22,14 +22,69 @@ import (
 	"time"
 
 	"github.com/ChainSafe/gossamer/lib/utils"
+	log "github.com/ChainSafe/log15"
+	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/stretchr/testify/require"
 )
+
+func TestMessageSize(t *testing.T) {
+	size := 100000
+	msg := make([]byte, size)
+	msg[0] = 77
+
+	nodes := make([]*Service, 2)
+	errs := make([]chan error, 2)
+
+	for i := range nodes {
+		errCh := make(chan error)
+
+		config := &Config{
+			Port:        7000 + uint32(i),
+			RandSeed:    1 + int64(i),
+			NoBootstrap: true,
+			NoMDNS:      true,
+			ErrChan:     errCh,
+			LogLvl:      log.LvlTrace,
+		}
+		node := createTestService(t, config)
+		defer node.Stop()
+		nodes[i] = node
+		errs[i] = errCh
+	}
+
+	addrs := nodes[0].host.multiaddrs()
+	ainfo, err := peer.AddrInfoFromP2pAddr(addrs[1])
+	require.NoError(t, err)
+
+	for i, n := range nodes {
+		if i == 0 {
+			// connect other nodes to first node
+			continue
+		}
+
+		err = n.host.connect(*ainfo)
+		require.NoError(t, err, i)
+	}
+
+	err = nodes[0].host.sendBytes(nodes[1].host.id(), "", msg)
+	require.NoError(t, err)
+	time.Sleep(time.Second)
+	err = nodes[1].host.sendBytes(nodes[0].host.id(), "", msg)
+	require.NoError(t, err)
+	time.Sleep(time.Second)
+
+	select {
+	case err := <-errs[0]:
+		t.Fatal("got error", err)
+	case err := <-errs[1]:
+		t.Fatal("got error", err)
+	case <-time.After(time.Millisecond * 100):
+	}
+}
 
 // test host connect method
 func TestConnect(t *testing.T) {
 	basePathA := utils.NewTestBasePath(t, "nodeA")
-
-	// removes all data directories created within test directory
-	defer utils.RemoveTestDir(t)
 
 	configA := &Config{
 		BasePath:    basePathA,
@@ -40,7 +95,6 @@ func TestConnect(t *testing.T) {
 	}
 
 	nodeA := createTestService(t, configA)
-	defer nodeA.Stop()
 
 	nodeA.noGossip = true
 	nodeA.noStatus = true
@@ -56,15 +110,12 @@ func TestConnect(t *testing.T) {
 	}
 
 	nodeB := createTestService(t, configB)
-	defer nodeB.Stop()
 
 	nodeB.noGossip = true
 	nodeB.noStatus = true
 
 	addrInfosB, err := nodeB.host.addrInfos()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	err = nodeA.host.connect(*addrInfosB[0])
 	// retry connect if "failed to dial" error
@@ -72,9 +123,7 @@ func TestConnect(t *testing.T) {
 		time.Sleep(TestBackoffTimeout)
 		err = nodeA.host.connect(*addrInfosB[0])
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	peerCountA := nodeA.host.peerCount()
 	peerCountB := nodeB.host.peerCount()
@@ -100,9 +149,6 @@ func TestConnect(t *testing.T) {
 func TestBootstrap(t *testing.T) {
 	basePathA := utils.NewTestBasePath(t, "nodeA")
 
-	// removes all data directories created within test directory
-	defer utils.RemoveTestDir(t)
-
 	configA := &Config{
 		BasePath:    basePathA,
 		Port:        7001,
@@ -112,7 +158,6 @@ func TestBootstrap(t *testing.T) {
 	}
 
 	nodeA := createTestService(t, configA)
-	defer nodeA.Stop()
 
 	nodeA.noGossip = true
 	nodeA.noStatus = true
@@ -130,7 +175,6 @@ func TestBootstrap(t *testing.T) {
 	}
 
 	nodeB := createTestService(t, configB)
-	defer nodeB.Stop()
 
 	nodeB.noGossip = true
 	nodeB.noStatus = true
@@ -163,81 +207,9 @@ func TestBootstrap(t *testing.T) {
 	}
 }
 
-// test host ping method
-func TestPing(t *testing.T) {
-	basePathA := utils.NewTestBasePath(t, "nodeA")
-
-	// removes all data directories created within test directory
-	defer utils.RemoveTestDir(t)
-
-	configA := &Config{
-		BasePath:    basePathA,
-		Port:        7001,
-		RandSeed:    1,
-		NoBootstrap: true,
-		NoMDNS:      true,
-	}
-
-	nodeA := createTestService(t, configA)
-	defer nodeA.Stop()
-
-	nodeA.noGossip = true
-	nodeA.noStatus = true
-
-	basePathB := utils.NewTestBasePath(t, "nodeB")
-
-	configB := &Config{
-		BasePath:    basePathB,
-		Port:        7002,
-		RandSeed:    2,
-		NoBootstrap: true,
-		NoMDNS:      true,
-	}
-
-	nodeB := createTestService(t, configB)
-	defer nodeB.Stop()
-
-	nodeB.noGossip = true
-	nodeB.noStatus = true
-
-	addrInfosB, err := nodeB.host.addrInfos()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = nodeA.host.connect(*addrInfosB[0])
-	// retry connect if "failed to dial" error
-	if failedToDial(err) {
-		time.Sleep(TestBackoffTimeout)
-		err = nodeA.host.connect(*addrInfosB[0])
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = nodeA.host.ping(addrInfosB[0].ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	addrInfosA, err := nodeA.host.addrInfos()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = nodeB.host.ping(addrInfosA[0].ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 // test host send method
 func TestSend(t *testing.T) {
 	basePathA := utils.NewTestBasePath(t, "nodeA")
-
-	// removes all data directories created within test directory
-	defer utils.RemoveTestDir(t)
-
 	configA := &Config{
 		BasePath:    basePathA,
 		Port:        7001,
@@ -247,26 +219,24 @@ func TestSend(t *testing.T) {
 	}
 
 	nodeA := createTestService(t, configA)
-	defer nodeA.Stop()
 
 	nodeA.noGossip = true
 	nodeA.noStatus = true
 
 	basePathB := utils.NewTestBasePath(t, "nodeB")
 
-	msgSendB := make(chan Message)
+	mmh := new(MockMessageHandler)
 
 	configB := &Config{
-		BasePath:    basePathB,
-		Port:        7002,
-		RandSeed:    2,
-		NoBootstrap: true,
-		NoMDNS:      true,
-		MsgSend:     msgSendB,
+		BasePath:       basePathB,
+		Port:           7002,
+		RandSeed:       2,
+		NoBootstrap:    true,
+		NoMDNS:         true,
+		MessageHandler: mmh,
 	}
 
 	nodeB := createTestService(t, configB)
-	defer nodeB.Stop()
 
 	nodeB.noGossip = true
 	nodeB.noStatus = true
@@ -282,36 +252,23 @@ func TestSend(t *testing.T) {
 		time.Sleep(TestBackoffTimeout)
 		err = nodeA.host.connect(*addrInfosB[0])
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	err = nodeA.host.send(addrInfosB[0].ID, TestMessage)
-	if err != nil {
-		t.Fatal(err)
-	}
+	err = nodeA.host.send(addrInfosB[0].ID, "", TestMessage)
+	require.NoError(t, err)
 
-	select {
-	case msg := <-msgSendB:
-		if !reflect.DeepEqual(msg, TestMessage) {
-			t.Error(
-				"node B received unexpected message from node A",
-				"\nexpected:", TestMessage,
-				"\nreceived:", msg,
-			)
-		}
-	case <-time.After(TestMessageTimeout):
-		t.Error("node B timeout waiting for message from node A")
+	time.Sleep(TestMessageTimeout)
+	if !reflect.DeepEqual(TestMessage, mmh.Message) {
+		t.Error(
+			"node B received unexpected message from node A",
+			"\nexpected:", TestMessage,
+			"\nreceived:", mmh.Message,
+		)
 	}
 }
 
-// test host broadcast method
 func TestBroadcast(t *testing.T) {
 	basePathA := utils.NewTestBasePath(t, "nodeA")
-
-	// removes all data directories created within test directory
-	defer utils.RemoveTestDir(t)
-
 	configA := &Config{
 		BasePath:    basePathA,
 		Port:        7001,
@@ -321,34 +278,26 @@ func TestBroadcast(t *testing.T) {
 	}
 
 	nodeA := createTestService(t, configA)
-	defer nodeA.Stop()
-
 	nodeA.noGossip = true
 	nodeA.noStatus = true
 
 	basePathB := utils.NewTestBasePath(t, "nodeB")
-
-	msgSendB := make(chan Message)
-
+	mmhB := new(MockMessageHandler)
 	configB := &Config{
-		BasePath:    basePathB,
-		Port:        7002,
-		RandSeed:    2,
-		NoBootstrap: true,
-		NoMDNS:      true,
-		MsgSend:     msgSendB,
+		BasePath:       basePathB,
+		Port:           7002,
+		RandSeed:       2,
+		NoBootstrap:    true,
+		NoMDNS:         true,
+		MessageHandler: mmhB,
 	}
 
 	nodeB := createTestService(t, configB)
-	defer nodeB.Stop()
-
 	nodeB.noGossip = true
 	nodeB.noStatus = true
 
 	addrInfosB, err := nodeB.host.addrInfos()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	err = nodeA.host.connect(*addrInfosB[0])
 	// retry connect if "failed to dial" error
@@ -356,33 +305,25 @@ func TestBroadcast(t *testing.T) {
 		time.Sleep(TestBackoffTimeout)
 		err = nodeA.host.connect(*addrInfosB[0])
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	basePathC := utils.NewTestBasePath(t, "")
-
-	msgSendC := make(chan Message)
-
+	mmhC := new(MockMessageHandler)
 	configC := &Config{
-		BasePath:    basePathC,
-		Port:        7003,
-		RandSeed:    3,
-		NoBootstrap: true,
-		NoMDNS:      true,
-		MsgSend:     msgSendC,
+		BasePath:       basePathC,
+		Port:           7003,
+		RandSeed:       3,
+		NoBootstrap:    true,
+		NoMDNS:         true,
+		MessageHandler: mmhC,
 	}
 
 	nodeC := createTestService(t, configC)
-	defer nodeC.Stop()
-
 	nodeC.noGossip = true
 	nodeC.noStatus = true
 
 	addrInfosC, err := nodeC.host.addrInfos()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	err = nodeA.host.connect(*addrInfosC[0])
 	// retry connect if "failed to dial" error
@@ -390,92 +331,66 @@ func TestBroadcast(t *testing.T) {
 		time.Sleep(TestBackoffTimeout)
 		err = nodeA.host.connect(*addrInfosC[0])
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	nodeA.host.broadcast(TestMessage)
 
-	select {
-	case msg := <-msgSendB:
-		if !reflect.DeepEqual(msg, TestMessage) {
-			t.Error(
-				"node B received unexpected message from node A",
-				"\nexpected:", TestMessage,
-				"\nreceived:", msg,
-			)
-		}
-	case <-time.After(TestMessageTimeout):
-		t.Error("node B timeout waiting for message")
+	time.Sleep(TestMessageTimeout)
+	if !reflect.DeepEqual(TestMessage, mmhB.Message) {
+		t.Error(
+			"node B received unexpected message from node A",
+			"\nexpected:", TestMessage,
+			"\nreceived:", mmhB.Message,
+		)
 	}
 
-	select {
-	case msg := <-msgSendC:
-		if !reflect.DeepEqual(msg, TestMessage) {
-			t.Error(
-				"node C received unexpected message from node A",
-				"\nexpected:", TestMessage,
-				"\nreceived:", msg,
-			)
-		}
-	case <-time.After(TestMessageTimeout):
-		t.Error("node C timeout waiting for message")
+	if !reflect.DeepEqual(TestMessage, mmhC.Message) {
+		t.Error(
+			"node C received unexpected message from node A",
+			"\nexpected:", TestMessage,
+			"\nreceived:", mmhC.Message,
+		)
 	}
-
 }
 
 // test host send method with existing stream
 func TestExistingStream(t *testing.T) {
 	basePathA := utils.NewTestBasePath(t, "nodeA")
-
-	// removes all data directories created within test directory
-	defer utils.RemoveTestDir(t)
-
-	msgSendA := make(chan Message)
-
+	mmhA := new(MockMessageHandler)
 	configA := &Config{
-		BasePath:    basePathA,
-		Port:        7001,
-		RandSeed:    1,
-		NoBootstrap: true,
-		NoMDNS:      true,
-		MsgSend:     msgSendA,
+		BasePath:       basePathA,
+		Port:           7001,
+		RandSeed:       1,
+		NoBootstrap:    true,
+		NoMDNS:         true,
+		MessageHandler: mmhA,
 	}
 
 	nodeA := createTestService(t, configA)
-	defer nodeA.Stop()
-
 	nodeA.noGossip = true
 	nodeA.noStatus = true
 
 	addrInfosA, err := nodeA.host.addrInfos()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	basePathB := utils.NewTestBasePath(t, "nodeB")
-
-	msgSendB := make(chan Message)
-
+	mmhB := new(MockMessageHandler)
 	configB := &Config{
-		BasePath:    basePathB,
-		Port:        7002,
-		RandSeed:    2,
-		NoBootstrap: true,
-		NoMDNS:      true,
-		MsgSend:     msgSendB,
+		BasePath:       basePathB,
+		Port:           7002,
+		RandSeed:       2,
+		NoBootstrap:    true,
+		NoMDNS:         true,
+		MessageHandler: mmhB,
 	}
 
 	nodeB := createTestService(t, configB)
-	defer nodeB.Stop()
 
 	nodeB.noGossip = true
 	nodeB.noStatus = true
 
 	addrInfosB, err := nodeB.host.addrInfos()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	err = nodeA.host.connect(*addrInfosB[0])
 	// retry connect if "failed to dial" error
@@ -483,85 +398,44 @@ func TestExistingStream(t *testing.T) {
 		time.Sleep(TestBackoffTimeout)
 		err = nodeA.host.connect(*addrInfosB[0])
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	stream := nodeA.host.getStream(nodeB.host.id())
-	if stream != nil {
-		t.Error("node A should not have an outbound stream")
-	}
+	stream := nodeA.host.getStream(nodeB.host.id(), "")
+	require.Nil(t, stream, "node A should not have an outbound stream")
 
 	// node A opens the stream to send the first message
-	err = nodeA.host.send(addrInfosB[0].ID, TestMessage)
-	if err != nil {
-		t.Fatal(err)
-	}
+	err = nodeA.host.send(addrInfosB[0].ID, "", TestMessage)
+	require.NoError(t, err)
 
-	select {
-	case <-msgSendB:
-	case <-time.After(TestMessageTimeout):
-		t.Error("node B timeout waiting for message from node A")
-	}
+	time.Sleep(TestMessageTimeout)
+	require.NotNil(t, mmhB.Message, "node B timeout waiting for message from node A")
 
-	stream = nodeA.host.getStream(nodeB.host.id())
-	if stream == nil {
-		t.Error("node A should have an outbound stream")
-	}
+	stream = nodeA.host.getStream(nodeB.host.id(), "")
+	require.NotNil(t, stream, "node A should have an outbound stream")
 
 	// node A uses the stream to send a second message
-	err = nodeA.host.send(addrInfosB[0].ID, TestMessage)
-	if err != nil {
-		t.Fatal(err)
-	}
+	err = nodeA.host.send(addrInfosB[0].ID, "", TestMessage)
+	require.NoError(t, err)
+	require.NotNil(t, mmhB.Message, "node B timeout waiting for message from node A")
 
-	select {
-	case <-msgSendB:
-	case <-time.After(TestMessageTimeout):
-		t.Error("node B timeout waiting for message from node A")
-	}
-
-	stream = nodeA.host.getStream(nodeB.host.id())
-	if stream == nil {
-		t.Error("node A should have an outbound stream")
-	}
-
-	stream = nodeB.host.getStream(nodeA.host.id())
-	if stream != nil {
-		t.Error("node B should not have an outbound stream")
-	}
+	stream = nodeA.host.getStream(nodeB.host.id(), "")
+	require.NotNil(t, stream, "node B should have an outbound stream")
 
 	// node B opens the stream to send the first message
-	err = nodeB.host.send(addrInfosA[0].ID, TestMessage)
-	if err != nil {
-		t.Fatal(err)
-	}
+	err = nodeB.host.send(addrInfosA[0].ID, "", TestMessage)
+	require.NoError(t, err)
 
-	select {
-	case <-msgSendA:
-	case <-time.After(TestMessageTimeout):
-		t.Error("node A timeout waiting for message from node B")
-	}
+	time.Sleep(TestMessageTimeout)
+	require.NotNil(t, mmhA.Message, "node A timeout waiting for message from node B")
 
-	stream = nodeB.host.getStream(nodeA.host.id())
-	if stream == nil {
-		t.Error("node B should have an outbound stream")
-	}
+	stream = nodeB.host.getStream(nodeA.host.id(), "")
+	require.NotNil(t, stream, "node B should have an outbound stream")
 
 	// node B uses the stream to send a second message
-	err = nodeB.host.send(addrInfosA[0].ID, TestMessage)
-	if err != nil {
-		t.Fatal(err)
-	}
+	err = nodeB.host.send(addrInfosA[0].ID, "", TestMessage)
+	require.NoError(t, err)
+	require.NotNil(t, mmhA.Message, "node A timeout waiting for message from node B")
 
-	select {
-	case <-msgSendA:
-	case <-time.After(TestMessageTimeout):
-		t.Error("node A timeout waiting for message from node B")
-	}
-
-	stream = nodeB.host.getStream(nodeA.host.id())
-	if stream == nil {
-		t.Error("node B should have an outbound stream")
-	}
+	stream = nodeB.host.getStream(nodeA.host.id(), "")
+	require.NotNil(t, stream, "node B should have an outbound stream")
 }

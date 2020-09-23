@@ -19,6 +19,7 @@ package babe
 import (
 	"math/big"
 
+	"github.com/ChainSafe/gossamer/dot/state"
 	"github.com/ChainSafe/gossamer/dot/types"
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/transaction"
@@ -42,13 +43,14 @@ type BlockState interface {
 	GetSlotForBlock(common.Hash) (uint64, error)
 	HighestBlockHash() common.Hash
 	HighestBlockNumber() *big.Int
-	GetFinalizedHeader() (*types.Header, error)
+	GetFinalizedHeader(uint64, uint64) (*types.Header, error)
+	IsDescendantOf(parent, child common.Hash) (bool, error)
 }
 
 // StorageState interface for storage state methods
 type StorageState interface {
-	StorageRoot() (common.Hash, error)
-	SetStorage([]byte, []byte) error
+	TrieState(hash *common.Hash) (*state.TrieState, error)
+	StoreTrie(root common.Hash, ts *state.TrieState) error
 }
 
 // TransactionQueue is the interface for transaction queue methods
@@ -56,4 +58,14 @@ type TransactionQueue interface {
 	Push(vt *transaction.ValidTransaction) (common.Hash, error)
 	Pop() *transaction.ValidTransaction
 	Peek() *transaction.ValidTransaction
+}
+
+// EpochState is the interface for epoch methods
+type EpochState interface {
+	SetCurrentEpoch(epoch uint64) error
+	GetCurrentEpoch() (uint64, error)
+	SetEpochInfo(epoch uint64, info *types.EpochInfo) error
+	GetEpochInfo(epoch uint64) (*types.EpochInfo, error)
+	HasEpochInfo(epoch uint64) (bool, error)
+	GetStartSlotForEpoch(epoch uint64) (uint64, error)
 }

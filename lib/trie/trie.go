@@ -62,6 +62,16 @@ func (t *Trie) EncodeRoot() ([]byte, error) {
 	return encode(t.RootNode())
 }
 
+// MustHash returns the hashed root of the trie. It panics if it fails to hash the root node.
+func (t *Trie) MustHash() common.Hash {
+	h, err := t.Hash()
+	if err != nil {
+		panic(err)
+	}
+
+	return h
+}
+
 // Hash returns the hashed root of the trie
 func (t *Trie) Hash() (common.Hash, error) {
 	encRoot, err := t.EncodeRoot()
@@ -262,6 +272,56 @@ func (t *Trie) Load(data map[string]string) error {
 	}
 
 	return nil
+}
+
+// GetKeysWithPrefix returns all keys in the trie that have the given prefix
+func (t *Trie) GetKeysWithPrefix(prefix []byte) [][]byte {
+	p := keyToNibbles(prefix)
+	if p[len(p)-1] == 0 {
+		p = p[:len(p)-1]
+	}
+	return t.getKeysWithPrefix(t.root, []byte{}, p, [][]byte{})
+}
+
+func (t *Trie) getKeysWithPrefix(parent node, prefix, key []byte, keys [][]byte) [][]byte {
+	switch p := parent.(type) {
+	case *branch:
+		length := lenCommonPrefix(p.key, key)
+
+		if bytes.Equal(p.key[:length], key) || len(key) == 0 {
+			// node has prefix, add to list and add all descendant nodes to list
+			keys = t.addAllKeys(p, prefix, keys)
+			return keys
+		}
+
+		keys = t.getKeysWithPrefix(p.children[key[0]], append(append(prefix, p.key...), key[0]), key[1:], keys)
+	case *leaf:
+		keys = append(keys, nibblesToKeyLE(append(prefix, p.key...)))
+	case nil:
+		return keys
+	}
+	return keys
+}
+
+// addAllKeys appends all keys that are descendants of the parent node to a slice of keys
+// it uses the prefix to determine the entire key
+func (t *Trie) addAllKeys(parent node, prefix []byte, keys [][]byte) [][]byte {
+	switch p := parent.(type) {
+	case *branch:
+		if p.value != nil {
+			keys = append(keys, nibblesToKeyLE(append(prefix, p.key...)))
+		}
+
+		for i, child := range p.children {
+			keys = t.addAllKeys(child, append(append(prefix, p.key...), byte(i)), keys)
+		}
+	case *leaf:
+		keys = append(keys, nibblesToKeyLE(append(prefix, p.key...)))
+	case nil:
+		return keys
+	}
+
+	return keys
 }
 
 // Get returns the value for key stored in the trie at the corresponding key

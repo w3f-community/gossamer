@@ -14,19 +14,20 @@
 // You should have received a copy of the GNU Lesser General Public License
 // along with the gossamer library. If not, see <http://www.gnu.org/licenses/>.
 
-package genesis
+package genesis_test
 
-const TestProtocolID = "/gossamer/test/0"
+import (
+	"testing"
 
-var TestBootnodes = []string{
-	"/dns4/p2p.cc3-0.kusama.network/tcp/30100/p2p/QmeCit3Nif4VfNqrEJsdYHZGcKzRCnZvGxg6hha1iNj4mk",
-	"/dns4/p2p.cc3-1.kusama.network/tcp/30100/p2p/QmchDJtEGiEWf7Ag58HNoTg9jSGzxkSZ23VgmF6xiLKKsZ",
-}
+	"github.com/ChainSafe/gossamer/dot"
+	"github.com/ChainSafe/gossamer/dot/state"
+	"github.com/ChainSafe/gossamer/lib/genesis"
 
-var TestGenesis = &Genesis{
-	Name:       "gossamer",
-	ID:         "gossamer",
-	Bootnodes:  TestBootnodes,
-	ProtocolID: TestProtocolID,
-	Genesis:    Fields{},
+	"github.com/stretchr/testify/require"
+)
+
+func TestNewRuntimeFromGenesis(t *testing.T) {
+	gen := dot.NewTestGenesis(t)
+	_, err := genesis.NewRuntimeFromGenesis(gen, &state.TrieState{})
+	require.NoError(t, err)
 }

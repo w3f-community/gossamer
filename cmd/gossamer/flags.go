@@ -73,14 +73,34 @@ var (
 		Name:  "basepath",
 		Usage: "Data directory for the node",
 	}
+	CPUProfFlag = cli.StringFlag{
+		Name:  "cpuprof",
+		Usage: "File to write CPU profile to",
+	}
+	MemProfFlag = cli.StringFlag{
+		Name:  "memprof",
+		Usage: "File to write memory profile to",
+	}
 )
 
 // Initialization-only flags
 var (
-	// GenesisFlag Path to genesis JSON file
+	// GenesisRawFlag Path to raw genesis JSON file
+	GenesisRawFlag = cli.StringFlag{
+		Name:  "genesis-raw",
+		Usage: "Path to raw genesis JSON file",
+	}
+)
+
+// BuildSpec-only flags
+var (
+	RawFlag = cli.BoolFlag{
+		Name:  "raw",
+		Usage: "Output as raw genesis JSON",
+	}
 	GenesisFlag = cli.StringFlag{
 		Name:  "genesis",
-		Usage: "Path to genesis JSON file",
+		Usage: "Path to human-readable genesis JSON file",
 	}
 )
 
@@ -198,6 +218,8 @@ var (
 		ChainFlag,
 		ConfigFlag,
 		BasePathFlag,
+		CPUProfFlag,
+		MemProfFlag,
 	}
 
 	// StartupFlags are flags that are valid for use with the root command and the export subcommand
@@ -232,13 +254,18 @@ var (
 	// InitFlags are flags that are valid for use with the init subcommand
 	InitFlags = append([]cli.Flag{
 		ForceFlag,
+		GenesisRawFlag,
+	}, GlobalFlags...)
+
+	BuildSpecFlags = append([]cli.Flag{
+		RawFlag,
 		GenesisFlag,
 	}, GlobalFlags...)
 
 	// ExportFlags are the flags that are valid for use with the export subcommand
 	ExportFlags = append([]cli.Flag{
 		ForceFlag,
-		GenesisFlag,
+		GenesisRawFlag,
 	}, append(GlobalFlags, StartupFlags...)...)
 
 	// AccountFlags are flags that are valid for use with the account subcommand

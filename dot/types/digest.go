@@ -42,6 +42,9 @@ func (h ConsensusEngineID) ToBytes() []byte {
 // BabeEngineID is the hard-coded babe ID
 var BabeEngineID = ConsensusEngineID{'B', 'A', 'B', 'E'}
 
+// GrandpaEngineID is the hard-coded grandpa ID
+var GrandpaEngineID = ConsensusEngineID{'F', 'R', 'N', 'K'}
+
 // ChangesTrieRootDigestType is the byte representation of ChangesTrieRootDigest
 var ChangesTrieRootDigestType = byte(2)
 
@@ -171,6 +174,11 @@ func (d *ConsensusDigest) Decode(in []byte) error {
 	copy(d.ConsensusEngineID[:], in[:4])
 	d.Data = in[4:]
 	return nil
+}
+
+// DataType returns the data type of the runtime-to-consensus engine message
+func (d *ConsensusDigest) DataType() byte {
+	return d.Data[0]
 }
 
 // SealDigest contains the seal or signature. This is only used by native code.

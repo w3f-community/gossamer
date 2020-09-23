@@ -9,12 +9,14 @@ import (
 	"github.com/ChainSafe/gossamer/dot/types"
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/common/optional"
+	"github.com/ChainSafe/gossamer/lib/crypto/ed25519"
 	"github.com/ChainSafe/gossamer/lib/crypto/sr25519"
 	"github.com/ChainSafe/gossamer/lib/keystore"
 	"github.com/ChainSafe/gossamer/lib/runtime/extrinsic"
 	"github.com/ChainSafe/gossamer/lib/transaction"
 	"github.com/ChainSafe/gossamer/lib/trie"
 
+	log "github.com/ChainSafe/log15"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,38 +34,29 @@ func TestGrandpaAuthorities(t *testing.T) {
 	t.Skip()
 	tt := trie.NewEmptyTrie()
 
-	value, err := common.HexToBytes("0x0108eea1eabcac7d2c8a6459b7322cf997874482bfc3d2ec7a80888a3a7d714103640100000000000000b64994460e59b30364cad3c92e3df6052f9b0ebbb8f88460c194dc5794d6d7170100000000000000")
-	if err != nil {
-		t.Fatal(err)
-	}
+	value, err := common.HexToBytes("0x0108eea1eabcac7d2c8a6459b7322cf997874482bfc3d2ec7a80888a3a7d714103640000000000000000b64994460e59b30364cad3c92e3df6052f9b0ebbb8f88460c194dc5794d6d7170100000000000000")
+	require.NoError(t, err)
 
 	err = tt.Put(TestAuthorityDataKey, value)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	rt := NewTestRuntimeWithTrie(t, NODE_RUNTIME, tt)
+	rt := NewTestRuntimeWithTrie(t, NODE_RUNTIME, tt, log.LvlTrace)
 
 	auths, err := rt.GrandpaAuthorities()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	authABytes, _ := common.HexToBytes("0xeea1eabcac7d2c8a6459b7322cf997874482bfc3d2ec7a80888a3a7d71410364")
 	authBBytes, _ := common.HexToBytes("0xb64994460e59b30364cad3c92e3df6052f9b0ebbb8f88460c194dc5794d6d717")
 
-	authA, _ := sr25519.NewPublicKey(authABytes)
-	authB, _ := sr25519.NewPublicKey(authBBytes)
+	authA, _ := ed25519.NewPublicKey(authABytes)
+	authB, _ := ed25519.NewPublicKey(authBBytes)
 
-	expected := []*types.AuthorityData{
-		{ID: authA, Weight: 1},
-		{ID: authB, Weight: 1},
+	expected := []*types.Authority{
+		{Key: authA, Weight: 0},
+		{Key: authB, Weight: 1},
 	}
 
-	// TODO: why does the second key not get loaded?
-	if !reflect.DeepEqual(auths[0], expected[0]) {
-		t.Fatalf("Fail: got %v expected %v", auths, expected)
-	}
+	require.Equal(t, expected, auths)
 }
 
 func TestConfigurationFromRuntime_noAuth(t *testing.T) {
@@ -125,7 +118,7 @@ func TestConfigurationFromRuntime_withAuthorities(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rt := NewTestRuntimeWithTrie(t, NODE_RUNTIME, tt)
+	rt := NewTestRuntimeWithTrie(t, NODE_RUNTIME, tt, log.LvlTrace)
 
 	cfg, err := rt.BabeConfiguration()
 	if err != nil {
@@ -135,9 +128,9 @@ func TestConfigurationFromRuntime_withAuthorities(t *testing.T) {
 	authA, _ := common.HexToHash("0xeea1eabcac7d2c8a6459b7322cf997874482bfc3d2ec7a80888a3a7d71410364")
 	authB, _ := common.HexToHash("0xb64994460e59b30364cad3c92e3df6052f9b0ebbb8f88460c194dc5794d6d717")
 
-	expectedAuthData := []*types.AuthorityDataRaw{
-		{ID: authA, Weight: 1},
-		{ID: authB, Weight: 1},
+	expectedAuthData := []*types.AuthorityRaw{
+		{Key: authA, Weight: 1},
+		{Key: authB, Weight: 1},
 	}
 
 	// see: https://github.com/paritytech/substrate/blob/7b1d822446982013fa5b7ad5caff35ca84f8b7d0/core/test-runtime/src/lib.rs#L621
@@ -215,13 +208,12 @@ func TestFinalizeBlock(t *testing.T) {
 
 // TODO: the following tests need to be updated to use NODE_RUNTIME.
 // this will likely result in some of them being removed (need to determine what extrinsic types are valid)
-
 func TestValidateTransaction_AuthoritiesChange(t *testing.T) {
 	// TODO: update AuthoritiesChange to need to be signed by an authority
 	rt := NewTestRuntime(t, SUBSTRATE_TEST_RUNTIME)
 
-	alice := kr.Alice.Public().Encode()
-	bob := kr.Bob.Public().Encode()
+	alice := kr.Alice().Public().Encode()
+	bob := kr.Bob().Public().Encode()
 
 	aliceb := [32]byte{}
 	copy(aliceb[:], alice)
@@ -295,8 +287,8 @@ func TestValidateTransaction_StorageChange(t *testing.T) {
 func TestValidateTransaction_Transfer(t *testing.T) {
 	rt := NewTestRuntime(t, SUBSTRATE_TEST_RUNTIME)
 
-	alice := kr.Alice.Public().Encode()
-	bob := kr.Bob.Public().Encode()
+	alice := kr.Alice().Public().Encode()
+	bob := kr.Bob().Public().Encode()
 
 	aliceb := [32]byte{}
 	copy(aliceb[:], alice)
@@ -305,7 +297,7 @@ func TestValidateTransaction_Transfer(t *testing.T) {
 	copy(bobb[:], bob)
 
 	transfer := extrinsic.NewTransfer(aliceb, bobb, 1000, 1)
-	ext, err := transfer.AsSignedExtrinsic(kr.Alice.Private().(*sr25519.PrivateKey))
+	ext, err := transfer.AsSignedExtrinsic(kr.Alice().Private().(*sr25519.PrivateKey))
 	require.NoError(t, err)
 	tx, err := ext.Encode()
 	require.NoError(t, err)
@@ -329,8 +321,8 @@ func TestApplyExtrinsic_AuthoritiesChange(t *testing.T) {
 	// TODO: update AuthoritiesChange to need to be signed by an authority
 	rt := NewTestRuntime(t, SUBSTRATE_TEST_RUNTIME)
 
-	alice := kr.Alice.Public().Encode()
-	bob := kr.Bob.Public().Encode()
+	alice := kr.Alice().Public().Encode()
+	bob := kr.Bob().Public().Encode()
 
 	aliceb := [32]byte{}
 	copy(aliceb[:], alice)
@@ -397,7 +389,7 @@ func TestApplyExtrinsic_StorageChange_Set(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []byte{0, 0}, res)
 
-	val, err := rt.storage.GetStorage([]byte("testkey"))
+	val, err := rt.ctx.storage.Get([]byte("testkey"))
 	require.NoError(t, err)
 	require.Equal(t, []byte("testvalue"), val)
 
@@ -409,7 +401,7 @@ func TestApplyExtrinsic_StorageChange_Set(t *testing.T) {
 	}
 	require.NoError(t, err)
 
-	val, err = rt.storage.GetStorage([]byte("testkey"))
+	val, err = rt.ctx.storage.Get([]byte("testkey"))
 	require.NoError(t, err)
 	// TODO: why does calling finalize_block modify the storage?
 	require.NotEqual(t, []byte("testvalue"), val)
@@ -434,11 +426,12 @@ func TestApplyExtrinsic_StorageChange_Delete(t *testing.T) {
 
 	require.Equal(t, []byte{0, 0}, res)
 
-	val, err := rt.storage.GetStorage([]byte("testkey"))
+	val, err := rt.ctx.storage.Get([]byte("testkey"))
 	require.NoError(t, err)
 	require.Equal(t, []byte(nil), val)
 }
 
+// TODO, this test replaced by TestApplyExtrinsic_Transfer_NoBalance_UncheckedExt, should this be removed?
 func TestApplyExtrinsic_Transfer_NoBalance(t *testing.T) {
 	rt := NewTestRuntime(t, SUBSTRATE_TEST_RUNTIME)
 
@@ -446,8 +439,8 @@ func TestApplyExtrinsic_Transfer_NoBalance(t *testing.T) {
 		Number: big.NewInt(77),
 	}
 
-	alice := kr.Alice.Public().Encode()
-	bob := kr.Bob.Public().Encode()
+	alice := kr.Alice().Public().Encode()
+	bob := kr.Bob().Public().Encode()
 
 	ab := [32]byte{}
 	copy(ab[:], alice)
@@ -456,7 +449,7 @@ func TestApplyExtrinsic_Transfer_NoBalance(t *testing.T) {
 	copy(bb[:], bob)
 
 	transfer := extrinsic.NewTransfer(ab, bb, 1000, 0)
-	ext, err := transfer.AsSignedExtrinsic(kr.Alice.Private().(*sr25519.PrivateKey))
+	ext, err := transfer.AsSignedExtrinsic(kr.Alice().Private().(*sr25519.PrivateKey))
 	require.NoError(t, err)
 	tx, err := ext.Encode()
 	require.NoError(t, err)
@@ -470,6 +463,7 @@ func TestApplyExtrinsic_Transfer_NoBalance(t *testing.T) {
 	require.Equal(t, []byte{1, 2, 0, 1}, res)
 }
 
+// TODO, this test replaced by TestApplyExtrinsic_Transfer_WithBalance_UncheckedExtrinsic, should this be removed?
 func TestApplyExtrinsic_Transfer_WithBalance(t *testing.T) {
 	rt := NewTestRuntime(t, SUBSTRATE_TEST_RUNTIME)
 
@@ -477,8 +471,8 @@ func TestApplyExtrinsic_Transfer_WithBalance(t *testing.T) {
 		Number: big.NewInt(77),
 	}
 
-	alice := kr.Alice.Public().Encode()
-	bob := kr.Bob.Public().Encode()
+	alice := kr.Alice().Public().Encode()
+	bob := kr.Bob().Public().Encode()
 
 	ab := [32]byte{}
 	copy(ab[:], alice)
@@ -486,10 +480,10 @@ func TestApplyExtrinsic_Transfer_WithBalance(t *testing.T) {
 	bb := [32]byte{}
 	copy(bb[:], bob)
 
-	rt.storage.SetBalance(ab, 2000)
+	rt.ctx.storage.SetBalance(ab, 2000)
 
 	transfer := extrinsic.NewTransfer(ab, bb, 1000, 0)
-	ext, err := transfer.AsSignedExtrinsic(kr.Alice.Private().(*sr25519.PrivateKey))
+	ext, err := transfer.AsSignedExtrinsic(kr.Alice().Private().(*sr25519.PrivateKey))
 	require.NoError(t, err)
 	tx, err := ext.Encode()
 	require.NoError(t, err)
@@ -502,11 +496,11 @@ func TestApplyExtrinsic_Transfer_WithBalance(t *testing.T) {
 	require.Equal(t, []byte{0, 0}, res)
 
 	// TODO: not sure if alice's balance is getting decremented properly, seems like it's always getting set to the transfer amount
-	bal, err := rt.storage.GetBalance(ab)
+	bal, err := rt.ctx.storage.GetBalance(ab)
 	require.NoError(t, err)
 	require.Equal(t, uint64(1000), bal)
 
-	bal, err = rt.storage.GetBalance(bb)
+	bal, err = rt.ctx.storage.GetBalance(bb)
 	require.NoError(t, err)
 	require.Equal(t, uint64(1000), bal)
 }

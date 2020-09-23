@@ -18,17 +18,25 @@ package network
 
 import (
 	"context"
+	"math/rand"
 
 	"github.com/libp2p/go-libp2p-core/connmgr"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 
-	log "github.com/ChainSafe/log15"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
-// ConnManager implement connmgr.ConnManager
-type ConnManager struct{}
+// ConnManager implements connmgr.ConnManager
+type ConnManager struct {
+	max int // maximum number of peers
+}
+
+func newConnManager(max int) *ConnManager {
+	return &ConnManager{
+		max: max,
+	}
+}
 
 // Notifee is used to monitor changes to a connection
 func (cm *ConnManager) Notifee() network.Notifiee {
@@ -68,10 +76,15 @@ func (*ConnManager) Unprotect(peer.ID, string) bool { return false }
 // Close peer
 func (*ConnManager) Close() error { return nil }
 
+// IsProtected ...
+func (*ConnManager) IsProtected(id peer.ID, tag string) (protected bool) {
+	return false
+}
+
 // Listen is called when network starts listening on an address
 func (cm *ConnManager) Listen(n network.Network, addr ma.Multiaddr) {
-	log.Trace(
-		"[network] Started listening",
+	logger.Trace(
+		"Started listening",
 		"host", n.LocalPeer(),
 		"address", addr,
 	)
@@ -79,8 +92,8 @@ func (cm *ConnManager) Listen(n network.Network, addr ma.Multiaddr) {
 
 // ListenClose is called when network stops listening on an address
 func (cm *ConnManager) ListenClose(n network.Network, addr ma.Multiaddr) {
-	log.Trace(
-		"[network] Stopped listening",
+	logger.Trace(
+		"Stopped listening",
 		"host", n.LocalPeer(),
 		"address", addr,
 	)
@@ -88,17 +101,27 @@ func (cm *ConnManager) ListenClose(n network.Network, addr ma.Multiaddr) {
 
 // Connected is called when a connection opened
 func (cm *ConnManager) Connected(n network.Network, c network.Conn) {
-	log.Trace(
-		"[network] Connected to peer",
+	logger.Trace(
+		"Connected to peer",
 		"host", c.LocalPeer(),
 		"peer", c.RemotePeer(),
 	)
+
+	if len(n.Peers()) > cm.max {
+		i := rand.Intn(len(n.Peers()))
+		peers := n.Peers()
+		logger.Trace("Over max peer count, disconnecting from random peer", "peer", peers[i])
+		err := n.ClosePeer(peers[i])
+		if err != nil {
+			logger.Debug("failed to close connection to peer", "peer", peers[i], "num peers", len(n.Peers()))
+		}
+	}
 }
 
 // Disconnected is called when a connection closed
 func (cm *ConnManager) Disconnected(n network.Network, c network.Conn) {
-	log.Trace(
-		"[network] Disconnected from peer",
+	logger.Trace(
+		"Disconnected from peer",
 		"host", c.LocalPeer(),
 		"peer", c.RemotePeer(),
 	)
@@ -106,8 +129,8 @@ func (cm *ConnManager) Disconnected(n network.Network, c network.Conn) {
 
 // OpenedStream is called when a stream opened
 func (cm *ConnManager) OpenedStream(n network.Network, s network.Stream) {
-	log.Trace(
-		"[network] Opened stream",
+	logger.Trace(
+		"Opened stream",
 		"host", s.Conn().LocalPeer(),
 		"peer", s.Conn().RemotePeer(),
 		"protocol", s.Protocol(),
@@ -116,8 +139,8 @@ func (cm *ConnManager) OpenedStream(n network.Network, s network.Stream) {
 
 // ClosedStream is called when a stream closed
 func (cm *ConnManager) ClosedStream(n network.Network, s network.Stream) {
-	log.Trace(
-		"[network] Closed stream",
+	logger.Trace(
+		"Closed stream",
 		"host", s.Conn().LocalPeer(),
 		"peer", s.Conn().RemotePeer(),
 		"protocol", s.Protocol(),

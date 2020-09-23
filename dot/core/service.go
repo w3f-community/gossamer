@@ -17,34 +17,32 @@ package core
 
 import (
 	"bytes"
-	"errors"
+	"context"
 	"math/big"
+	"os"
 	"sync"
-	"sync/atomic"
 
 	"github.com/ChainSafe/gossamer/dot/network"
 	"github.com/ChainSafe/gossamer/dot/types"
-	"github.com/ChainSafe/gossamer/lib/babe"
-	"github.com/ChainSafe/gossamer/lib/blocktree"
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/crypto"
-	"github.com/ChainSafe/gossamer/lib/crypto/sr25519"
 	"github.com/ChainSafe/gossamer/lib/keystore"
 	"github.com/ChainSafe/gossamer/lib/runtime"
 	"github.com/ChainSafe/gossamer/lib/services"
 
-	database "github.com/ChainSafe/chaindb"
 	log "github.com/ChainSafe/log15"
 )
 
 var _ services.Service = &Service{}
 
-var maxResponseSize int64 = 8 // maximum number of block datas to reply with in a BlockResponse message.
-
 // Service is an overhead layer that allows communication between the runtime,
 // BABE session, and network service. It deals with the validation of transactions
 // and blocks by calling their respective validation functions in the runtime.
 type Service struct {
+	logger log.Logger
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	// State interfaces
 	blockState       BlockState
 	storageState     StorageState
@@ -54,44 +52,50 @@ type Service struct {
 	rt       *runtime.Runtime
 	codeHash common.Hash
 
-	// Current BABE session
-	bs              *babe.Session
-	isBabeAuthority bool
+	// Block production variables
+	blockProducer   BlockProducer
+	isBlockProducer bool
+
+	// Finality gadget variables
+	finalityGadget          FinalityGadget
+	isFinalityAuthority     bool
+	consensusMessageHandler ConsensusMessageHandler
+
+	// Block verification
+	verifier Verifier
 
 	// Keystore
-	keys *keystore.Keystore
+	keys *keystore.GlobalKeystore
 
-	// Channels for inter-process communication
-	msgRec    <-chan network.Message // receive messages from network service
-	msgSend   chan<- network.Message // send messages to network service
-	blkRec    <-chan types.Block     // receive blocks from BABE session
-	epochDone *sync.WaitGroup        // this is signaled when BABE epoch changes
-	babeKill  chan<- struct{}        // close this channel to kill current BABE session
-	lock      *sync.Mutex
-	started   uint32
+	// Channels and interfaces for inter-process communication
+	blkRec <-chan types.Block // receive blocks from BABE session
+	net    Network
 
-	// Block synchronization
-	blockNumOut chan<- *big.Int                      // send block numbers from peers to Syncer
-	respOut     chan<- *network.BlockResponseMessage // send incoming BlockResponseMessags to Syncer
-	syncLock    *sync.Mutex
-	syncer      *Syncer
+	blockAddCh   chan *types.Block // receive blocks added to blocktree
+	blockAddChID byte
+
+	// State variables
+	lock *sync.Mutex // channel lock
 }
 
 // Config holds the configuration for the core Service.
 type Config struct {
-	BlockState       BlockState
-	StorageState     StorageState
-	TransactionQueue TransactionQueue
-	Keystore         *keystore.Keystore
-	Runtime          *runtime.Runtime
-	IsBabeAuthority  bool
+	LogLvl                  log.Lvl
+	BlockState              BlockState
+	StorageState            StorageState
+	TransactionQueue        TransactionQueue
+	Network                 Network
+	Keystore                *keystore.GlobalKeystore
+	Runtime                 *runtime.Runtime
+	BlockProducer           BlockProducer
+	IsBlockProducer         bool
+	FinalityGadget          FinalityGadget
+	IsFinalityAuthority     bool
+	ConsensusMessageHandler ConsensusMessageHandler
+	Verifier                Verifier
 
-	NewBlocks chan types.Block // only used for testing purposes
-	Verifier  Verifier         // only used for testing purposes
-
-	MsgRec   <-chan network.Message
-	MsgSend  chan<- network.Message
-	SyncChan chan *big.Int
+	NewBlocks     chan types.Block // only used for testing purposes
+	BabeThreshold *big.Int         // used by Verifier, for development purposes
 }
 
 // NewService returns a new core service that connects the runtime, BABE
@@ -99,12 +103,6 @@ type Config struct {
 func NewService(cfg *Config) (*Service, error) {
 	if cfg.Keystore == nil {
 		return nil, ErrNilKeystore
-	}
-
-	keys := cfg.Keystore.Sr25519Keypairs()
-
-	if cfg.NewBlocks == nil {
-		cfg.NewBlocks = make(chan types.Block)
 	}
 
 	if cfg.BlockState == nil {
@@ -119,162 +117,96 @@ func NewService(cfg *Config) (*Service, error) {
 		return nil, ErrNilRuntime
 	}
 
-	codeHash, err := cfg.StorageState.LoadCodeHash()
+	if cfg.IsBlockProducer && cfg.BlockProducer == nil {
+		return nil, ErrNilBlockProducer
+	}
+
+	if cfg.IsFinalityAuthority && cfg.FinalityGadget == nil {
+		return nil, ErrNilFinalityGadget
+	}
+
+	if cfg.ConsensusMessageHandler == nil {
+		return nil, ErrNilConsensusMessageHandler
+	}
+
+	logger := log.New("pkg", "core")
+	h := log.StreamHandler(os.Stdout, log.TerminalFormat())
+	h = log.CallerFileHandler(h)
+	logger.SetHandler(log.LvlFilterHandler(cfg.LogLvl, h))
+
+	sr, err := cfg.BlockState.BestBlockStateRoot()
 	if err != nil {
 		return nil, err
 	}
 
-	syncerLock := &sync.Mutex{}
-	respChan := make(chan *network.BlockResponseMessage, 128)
-	chanLock := &sync.Mutex{}
-
-	var srv = &Service{}
-
-	var currentDescriptor *babe.NextEpochDescriptor
-
-	if cfg.IsBabeAuthority {
-		if cfg.Keystore.NumSr25519Keys() == 0 {
-			return nil, ErrNoKeysProvided
-		}
-
-		epochDone := new(sync.WaitGroup)
-		babeKill := make(chan struct{})
-
-		srv = &Service{
-			rt:               cfg.Runtime,
-			codeHash:         codeHash,
-			keys:             cfg.Keystore,
-			blkRec:           cfg.NewBlocks, // becomes block receive channel in core service
-			msgRec:           cfg.MsgRec,
-			msgSend:          cfg.MsgSend,
-			blockState:       cfg.BlockState,
-			storageState:     cfg.StorageState,
-			transactionQueue: cfg.TransactionQueue,
-			epochDone:        epochDone,
-			babeKill:         babeKill,
-			isBabeAuthority:  true,
-			lock:             chanLock,
-			syncLock:         syncerLock,
-			blockNumOut:      cfg.SyncChan,
-			respOut:          respChan,
-		}
-
-		// BABE session configuration
-		bsConfig := &babe.SessionConfig{
-			Keypair:          keys[0].(*sr25519.Keypair),
-			Runtime:          cfg.Runtime,
-			NewBlocks:        cfg.NewBlocks, // becomes block send channel in BABE session
-			BlockState:       cfg.BlockState,
-			StorageState:     cfg.StorageState,
-			EpochDone:        srv.epochDone,
-			Kill:             babeKill,
-			TransactionQueue: cfg.TransactionQueue,
-			SyncLock:         syncerLock,
-		}
-
-		var bs *babe.Session
-
-		// create a new BABE session
-		bs, err = babe.NewSession(bsConfig)
-		if err != nil {
-			srv.isBabeAuthority = false
-			log.Error("[core] could not create babe session", "error", err)
-			return nil, err
-		}
-
-		srv.bs = bs
-
-		currentDescriptor = bs.Descriptor()
-	} else {
-		srv = &Service{
-			rt:               cfg.Runtime,
-			codeHash:         codeHash,
-			keys:             cfg.Keystore,
-			blkRec:           cfg.NewBlocks, // becomes block receive channel in core service
-			msgRec:           cfg.MsgRec,
-			msgSend:          cfg.MsgSend,
-			blockState:       cfg.BlockState,
-			storageState:     cfg.StorageState,
-			transactionQueue: cfg.TransactionQueue,
-			isBabeAuthority:  false,
-			lock:             chanLock,
-			syncLock:         syncerLock,
-			blockNumOut:      cfg.SyncChan,
-			respOut:          respChan,
-		}
-
-		// thread safe way to change closed status
-		canLock := atomic.CompareAndSwapUint32(&srv.started, 0, 1)
-		if !canLock {
-			return nil, errors.New("failed to change Service status from stopped to started")
-		}
-
-		// TODO: load this from runtime BabeConfiguration
-		currentDescriptor = &babe.NextEpochDescriptor{
-			Authorities: []*types.AuthorityData{},
-			Randomness:  [babe.RandomnessLength]byte{},
-		}
-	}
-
-	if cfg.Verifier == nil {
-		// TODO: load current epoch from database chain head
-		cfg.Verifier, err = babe.NewVerificationManager(cfg.BlockState, 0, currentDescriptor)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// only one process is starting *core.Service, don't need to use atomic here
-	srv.started = 1
-
-	syncerCfg := &SyncerConfig{
-		BlockState:       cfg.BlockState,
-		BlockNumIn:       cfg.SyncChan,
-		RespIn:           respChan,
-		MsgOut:           cfg.MsgSend,
-		Lock:             syncerLock,
-		ChanLock:         chanLock,
-		TransactionQueue: cfg.TransactionQueue,
-		Verifier:         cfg.Verifier,
-		Runtime:          cfg.Runtime,
-	}
-
-	syncer, err := NewSyncer(syncerCfg)
+	codeHash, err := cfg.StorageState.LoadCodeHash(&sr)
 	if err != nil {
 		return nil, err
 	}
 
-	srv.syncer = syncer
+	blockAddCh := make(chan *types.Block, 16)
+	id, err := cfg.BlockState.RegisterImportedChannel(blockAddCh)
+	if err != nil {
+		return nil, err
+	}
 
-	// core service
+	ctx, cancel := context.WithCancel(context.Background())
+
+	srv := &Service{
+		logger:                  logger,
+		ctx:                     ctx,
+		cancel:                  cancel,
+		rt:                      cfg.Runtime,
+		codeHash:                codeHash,
+		keys:                    cfg.Keystore,
+		blkRec:                  cfg.NewBlocks,
+		blockState:              cfg.BlockState,
+		storageState:            cfg.StorageState,
+		transactionQueue:        cfg.TransactionQueue,
+		net:                     cfg.Network,
+		isBlockProducer:         cfg.IsBlockProducer,
+		blockProducer:           cfg.BlockProducer,
+		finalityGadget:          cfg.FinalityGadget,
+		consensusMessageHandler: cfg.ConsensusMessageHandler,
+		verifier:                cfg.Verifier,
+		isFinalityAuthority:     cfg.IsFinalityAuthority,
+		lock:                    &sync.Mutex{},
+		blockAddCh:              blockAddCh,
+		blockAddChID:            id,
+	}
+
+	if cfg.NewBlocks != nil {
+		srv.blkRec = cfg.NewBlocks
+	} else if cfg.IsBlockProducer {
+		srv.blkRec = cfg.BlockProducer.GetBlockChannel()
+	}
+
 	return srv, nil
 }
 
 // Start starts the core service
 func (s *Service) Start() error {
+	// we can ignore the `cancel` function returned by `context.WithCancel` since Stop() cancels the parent context,
+	// so all the child contexts should also be canceled. potentially update if there is a better way to do this
 
 	// start receiving blocks from BABE session
-	go s.receiveBlocks()
+	ctx, _ := context.WithCancel(s.ctx) //nolint
+	go s.receiveBlocks(ctx)
 
 	// start receiving messages from network service
-	go s.receiveMessages()
+	ctx, _ = context.WithCancel(s.ctx) //nolint
 
-	// start syncer
-	err := s.syncer.Start()
-	if err != nil {
-		log.Error("[core] could not start syncer", "error", err)
-		return err
-	}
+	// start handling imported blocks
+	ctx, _ = context.WithCancel(s.ctx) //nolint
+	go s.handleBlocks(ctx)
 
-	if s.isBabeAuthority {
-		// monitor babe session for epoch changes
-		go s.handleBabeSession()
+	if s.isFinalityAuthority && s.finalityGadget != nil {
+		s.logger.Debug("routing finality gadget messages")
+		ctx, _ = context.WithCancel(s.ctx) //nolint
+		go s.sendVoteMessages(ctx)
 
-		err := s.bs.Start()
-		if err != nil {
-			log.Error("[core] could not start BABE", "error", err)
-			return err
-		}
+		ctx, _ = context.WithCancel(s.ctx) //nolint
+		go s.sendFinalizationMessages(ctx)
 	}
 
 	return nil
@@ -282,32 +214,12 @@ func (s *Service) Start() error {
 
 // Stop stops the core service
 func (s *Service) Stop() error {
-
 	s.lock.Lock()
 	defer s.lock.Unlock()
+	s.cancel()
 
-	// close channel to network service and BABE service
-	// thread safe way to check closed status
-	if atomic.LoadUint32(&s.started) == uint32(1) {
-		if s.msgSend != nil {
-			close(s.msgSend)
-		}
-		if s.isBabeAuthority {
-			close(s.babeKill)
-		}
-
-		defer func() {
-			if ok := atomic.CompareAndSwapUint32(&s.started, 1, 0); !ok {
-				log.Error("[core] failed to change Service status from started to stopped")
-			}
-		}()
-
-	}
-
-	err := s.syncer.Stop()
-	if err != nil {
-		return err
-	}
+	s.blockState.UnregisterImportedChannel(s.blockAddChID)
+	close(s.blockAddCh)
 
 	return nil
 }
@@ -317,88 +229,70 @@ func (s *Service) StorageRoot() (common.Hash, error) {
 	if s.storageState == nil {
 		return common.Hash{}, ErrNilStorageState
 	}
-	return s.storageState.StorageRoot()
-}
 
-func (s *Service) safeMsgSend(msg network.Message) error {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	if atomic.LoadUint32(&s.started) == uint32(0) {
-		return ErrServiceStopped
-	}
-
-	s.msgSend <- msg
-	return nil
-}
-
-func (s *Service) safeBabeKill() error {
-	s.lock.Lock()
-	defer s.lock.Unlock()
-
-	if atomic.LoadUint32(&s.started) == uint32(0) {
-		return ErrServiceStopped
-	}
-
-	close(s.babeKill)
-	return nil
-}
-
-func (s *Service) handleBabeSession() {
-	// wait for BABE epoch to complete
-	s.epochDone.Add(1)
-	s.epochDone.Wait()
-
-	// TODO: fetch NextEpochDescriptor from verifier
-
-	// create new BABE session
-	bs, err := s.initializeBabeSession()
+	ts, err := s.storageState.TrieState(nil)
 	if err != nil {
-		log.Error("[core] failed to initialize BABE session", "error", err)
-		return
+		return common.Hash{}, err
 	}
 
-	// start new BABE session
-	err = bs.Start()
-	if err != nil {
-		log.Error("[core] failed to start BABE session", "error", err)
-		return
-	}
+	return ts.Root()
+}
 
-	// append successfully started BABE session to core service
-	s.bs = bs
+func (s *Service) handleBlocks(ctx context.Context) {
+	for {
+		select {
+		case block := <-s.blockAddCh:
+			if block == nil {
+				continue
+			}
+
+			err := s.storageState.StoreInDB(block.Header.StateRoot)
+			if err != nil {
+				log.Warn("failed to store storage trie in database", "error", err)
+			}
+
+			err = s.handleRuntimeChanges(block.Header)
+			if err != nil {
+				log.Warn("failed to handle runtime change for block", "block", block.Header.Hash(), "error", err)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // receiveBlocks starts receiving blocks from the BABE session
-func (s *Service) receiveBlocks() {
-	// receive block from BABE session
-	for block := range s.blkRec {
-		if block.Header != nil {
+func (s *Service) receiveBlocks(ctx context.Context) {
+	for {
+		select {
+		case block := <-s.blkRec:
+			if block.Header == nil {
+				continue
+			}
+
 			err := s.handleReceivedBlock(&block)
 			if err != nil {
-				log.Error("[core] failed to handle block from BABE session", "err", err)
+				s.logger.Warn("failed to handle block from BABE session", "err", err)
 			}
-		} else {
-			log.Trace("[core] receiveBlocks got nil Header")
+		case <-ctx.Done():
+			return
 		}
 	}
 }
 
-// receiveMessages starts receiving messages from the network service
-func (s *Service) receiveMessages() {
-	// receive message from network service
-	for msg := range s.msgRec {
-		if msg == nil {
-			log.Error("[core] failed to receive message from network service")
-			continue
-		}
+// HandleMessage handles network messages that are passed to it
+func (s *Service) HandleMessage(message network.Message) {
+	if message == nil {
+		return
+	}
 
-		err := s.handleReceivedMessage(msg)
-		if err == blocktree.ErrDescendantNotFound || err == blocktree.ErrStartNodeNotFound || err == database.ErrKeyNotFound {
-			log.Trace("[core] failed to handle message from network service", "err", err)
-		} else if err != nil {
-			log.Error("[core] failed to handle message from network service", "err", err)
-		}
+	if s.ctx.Err() != nil {
+		return
+	}
+
+	err := s.handleReceivedMessage(message)
+	if err != nil {
+		s.logger.Trace("failed to handle message from network service", "err", err)
 	}
 }
 
@@ -413,7 +307,7 @@ func (s *Service) handleReceivedBlock(block *types.Block) (err error) {
 		return err
 	}
 
-	log.Debug("[core] added block from BABE", "header", block.Header, "body", block.Body)
+	s.logger.Debug("added block from BABE", "header", block.Header, "body", block.Body)
 
 	msg := &network.BlockAnnounceMessage{
 		ParentHash:     block.Header.ParentHash,
@@ -423,40 +317,15 @@ func (s *Service) handleReceivedBlock(block *types.Block) (err error) {
 		Digest:         block.Header.Digest,
 	}
 
-	err = s.safeMsgSend(msg)
-	if err != nil {
-		return err
-	}
-
-	return s.checkForRuntimeChanges()
+	s.net.SendMessage(msg)
+	return nil
 }
 
 // handleReceivedMessage handles messages from the network service
 func (s *Service) handleReceivedMessage(msg network.Message) (err error) {
-	msgType := msg.GetType()
+	msgType := msg.Type()
 
 	switch msgType {
-	case network.BlockRequestMsgType: // 1
-		msg, ok := msg.(*network.BlockRequestMessage)
-		if !ok {
-			return ErrMessageCast("BlockRequestMessage")
-		}
-
-		err = s.ProcessBlockRequestMessage(msg)
-	case network.BlockResponseMsgType: // 2
-		msg, ok := msg.(*network.BlockResponseMessage)
-		if !ok {
-			return ErrMessageCast("BlockResponseMessage")
-		}
-
-		err = s.ProcessBlockResponseMessage(msg)
-	case network.BlockAnnounceMsgType: // 3
-		msg, ok := msg.(*network.BlockAnnounceMessage)
-		if !ok {
-			return ErrMessageCast("BlockAnnounceMessage")
-		}
-
-		err = s.ProcessBlockAnnounceMessage(msg)
 	case network.TransactionMsgType: // 4
 		msg, ok := msg.(*network.TransactionMessage)
 		if !ok {
@@ -464,6 +333,13 @@ func (s *Service) handleReceivedMessage(msg network.Message) (err error) {
 		}
 
 		err = s.ProcessTransactionMessage(msg)
+	case network.ConsensusMsgType: // 5
+		msg, ok := msg.(*network.ConsensusMessage)
+		if !ok {
+			return ErrMessageCast("ConsensusMessage")
+		}
+
+		err = s.processConsensusMessage(msg)
 	default:
 		err = ErrUnsupportedMsgType(msgType)
 	}
@@ -471,47 +347,70 @@ func (s *Service) handleReceivedMessage(msg network.Message) (err error) {
 	return err
 }
 
-// checkForRuntimeChanges checks if changes to the runtime code have occurred; if so, load the new runtime
-func (s *Service) checkForRuntimeChanges() error {
-	currentCodeHash, err := s.storageState.LoadCodeHash()
+// handleRuntimeChanges checks if changes to the runtime code have occurred; if so, load the new runtime
+// It also updates the BABE service and block verifier with the new runtime
+func (s *Service) handleRuntimeChanges(header *types.Header) error {
+	sr, err := s.blockState.BestBlockStateRoot()
+	if err != nil {
+		return err
+	}
+
+	currentCodeHash, err := s.storageState.LoadCodeHash(&sr)
 	if err != nil {
 		return err
 	}
 
 	if !bytes.Equal(currentCodeHash[:], s.codeHash[:]) {
-		code, err := s.storageState.LoadCode()
+		code, err := s.storageState.LoadCode(&sr)
 		if err != nil {
 			return err
 		}
 
 		s.rt.Stop()
 
-		s.rt, err = runtime.NewRuntime(code, s.storageState, s.keys, runtime.RegisterImports_NodeRuntime)
+		ts, err := s.storageState.TrieState(&sr)
 		if err != nil {
 			return err
 		}
 
-		// kill babe session, handleBabeSession will reload it with the new runtime
-		if s.isBabeAuthority {
-			err = s.safeBabeKill()
+		cfg := &runtime.Config{
+			Storage:  ts,
+			Keystore: s.keys.Acco.(*keystore.GenericKeystore),
+			Imports:  runtime.RegisterImports_NodeRuntime,
+			LogLvl:   -1, // don't change runtime package log level
+		}
+
+		s.rt, err = runtime.NewRuntime(code, cfg)
+		if err != nil {
+			return err
+		}
+
+		if s.isBlockProducer {
+			err = s.blockProducer.SetRuntime(s.rt)
 			if err != nil {
 				return err
 			}
+		}
+
+		err = s.verifier.SetRuntimeChangeAtBlock(header, s.rt)
+		if err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-// InsertKey inserts keypair into keystore
+// InsertKey inserts keypair into the account keystore
+// TODO: define which keystores need to be updated and create separate insert funcs for each
 func (s *Service) InsertKey(kp crypto.Keypair) {
-	s.keys.Insert(kp)
+	s.keys.Acco.Insert(kp)
 }
 
 // HasKey returns true if given hex encoded public key string is found in keystore, false otherwise, error if there
 //  are issues decoding string
 func (s *Service) HasKey(pubKeyStr string, keyType string) (bool, error) {
-	return keystore.HasKey(pubKeyStr, keyType, s.keys)
+	return keystore.HasKey(pubKeyStr, keyType, s.keys.Acco)
 }
 
 // GetRuntimeVersion gets the current RuntimeVersion
@@ -521,6 +420,12 @@ func (s *Service) GetRuntimeVersion() (*runtime.VersionAPI, error) {
 		RuntimeVersion: &runtime.Version{},
 		API:            nil,
 	}
+
+	ts, err := s.storageState.TrieState(nil)
+	if err != nil {
+		return nil, err
+	}
+	s.rt.SetContext(ts)
 
 	ret, err := s.rt.Exec(runtime.CoreVersion, []byte{})
 	if err != nil {
@@ -534,15 +439,16 @@ func (s *Service) GetRuntimeVersion() (*runtime.VersionAPI, error) {
 	return version, nil
 }
 
-// IsBabeAuthority returns true if node is BABE authority
-func (s *Service) IsBabeAuthority() bool {
-	return s.isBabeAuthority
+// IsBlockProducer returns true if node is a block producer
+func (s *Service) IsBlockProducer() bool {
+	return s.isBlockProducer
 }
 
 // HandleSubmittedExtrinsic is used to send a Transaction message containing a Extrinsic @ext
 func (s *Service) HandleSubmittedExtrinsic(ext types.Extrinsic) error {
 	msg := &network.TransactionMessage{Extrinsics: []types.Extrinsic{ext}}
-	return s.safeMsgSend(msg)
+	s.net.SendMessage(msg)
+	return nil
 }
 
 //GetMetadata calls runtime Metadata_metadata function

@@ -17,8 +17,8 @@
 package runtime
 
 import (
-	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/ChainSafe/gossamer/lib/keystore"
@@ -26,42 +26,66 @@ import (
 	wasm "github.com/wasmerio/go-ext-wasm/wasmer"
 )
 
-var memory, memErr = wasm.NewMemory(1024, 0)
+var memory, memErr = wasm.NewMemory(17, 0)
+var logger = log.New("pkg", "runtime")
+
+// NodeStorageTypePersistent flag to identify offchain storage as persistent (db)
+const NodeStorageTypePersistent int32 = 1
+
+// NodeStorageTypeLocal flog to identify offchain storage as local (memory)
+const NodeStorageTypeLocal int32 = 2
+
+// NodeStorage struct for storage of runtime offchain worker data
+type NodeStorage struct {
+	LocalStorage      BasicStorage
+	PersistentStorage BasicStorage
+}
 
 // Ctx struct
 type Ctx struct {
-	storage   Storage
-	allocator *FreeingBumpHeapAllocator
-	keystore  *keystore.Keystore
+	storage     Storage
+	allocator   *FreeingBumpHeapAllocator
+	keystore    *keystore.GenericKeystore
+	nodeStorage NodeStorage
+	validator   bool
+}
+
+// Config represents a runtime configuration
+type Config struct {
+	Storage     Storage
+	Keystore    *keystore.GenericKeystore
+	Imports     func() (*wasm.Imports, error)
+	LogLvl      log.Lvl
+	NodeStorage NodeStorage
+	Role        byte
 }
 
 // Runtime struct
 type Runtime struct {
-	vm        wasm.Instance
-	storage   Storage
-	keystore  *keystore.Keystore
-	mutex     sync.Mutex
-	allocator *FreeingBumpHeapAllocator
+	vm    wasm.Instance
+	ctx   *Ctx
+	mutex sync.Mutex
 }
 
 // NewRuntimeFromFile instantiates a runtime from a .wasm file
-func NewRuntimeFromFile(fp string, s Storage, ks *keystore.Keystore, registerImports func() (*wasm.Imports, error)) (*Runtime, error) {
+func NewRuntimeFromFile(fp string, cfg *Config) (*Runtime, error) {
 	// Reads the WebAssembly module as bytes.
 	bytes, err := wasm.ReadBytes(fp)
 	if err != nil {
 		return nil, err
 	}
 
-	return NewRuntime(bytes, s, ks, registerImports)
+	return NewRuntime(bytes, cfg)
 }
 
 // NewRuntime instantiates a runtime from raw wasm bytecode
-func NewRuntime(code []byte, s Storage, ks *keystore.Keystore, registerImports func() (*wasm.Imports, error)) (*Runtime, error) {
-	if s == nil {
-		return nil, errors.New("runtime does not have storage trie")
-	}
+func NewRuntime(code []byte, cfg *Config) (*Runtime, error) {
+	// if cfg.LogLvl set to < 0, then don't change package log level
+	h := log.StreamHandler(os.Stdout, log.TerminalFormat())
+	h = log.CallerFileHandler(h)
+	logger.SetHandler(log.LvlFilterHandler(log.LvlTrace, h))
 
-	imports, err := registerImports()
+	imports, err := cfg.Imports()
 	if err != nil {
 		return nil, err
 	}
@@ -92,21 +116,25 @@ func NewRuntime(code []byte, s Storage, ks *keystore.Keystore, registerImports f
 
 	memAllocator := NewAllocator(memory, 0)
 
-	runtimeCtx := Ctx{
-		storage:   s,
-		allocator: memAllocator,
-		keystore:  ks,
+	validator := false
+	if cfg.Role == byte(4) {
+		validator = true
 	}
 
-	log.Debug("[NewRuntime]", "runtimeCtx", runtimeCtx)
-	instance.SetContextData(&runtimeCtx)
+	runtimeCtx := &Ctx{
+		storage:     cfg.Storage,
+		allocator:   memAllocator,
+		keystore:    cfg.Keystore,
+		nodeStorage: cfg.NodeStorage,
+		validator:   validator,
+	}
+
+	logger.Debug("NewRuntime", "runtimeCtx", runtimeCtx)
+	instance.SetContextData(runtimeCtx)
 
 	r := Runtime{
-		vm:        instance,
-		storage:   s,
-		mutex:     sync.Mutex{},
-		keystore:  ks,
-		allocator: memAllocator,
+		vm:  instance,
+		ctx: runtimeCtx,
 	}
 
 	return &r, nil
@@ -132,6 +160,10 @@ func (r *Runtime) Load(location, length int32) []byte {
 
 // Exec func
 func (r *Runtime) Exec(function string, data []byte) ([]byte, error) {
+	if r.ctx.storage == nil {
+		return nil, ErrNilStorage
+	}
+
 	ptr, err := r.malloc(uint32(len(data)))
 	if err != nil {
 		return nil, err
@@ -140,7 +172,7 @@ func (r *Runtime) Exec(function string, data []byte) ([]byte, error) {
 	defer func() {
 		err = r.free(ptr)
 		if err != nil {
-			log.Error("exec: could not free ptr", "error", err)
+			logger.Error("exec: could not free ptr", "error", err)
 		}
 	}()
 
@@ -170,9 +202,9 @@ func (r *Runtime) Exec(function string, data []byte) ([]byte, error) {
 }
 
 func (r *Runtime) malloc(size uint32) (uint32, error) {
-	return r.allocator.Allocate(size)
+	return r.ctx.allocator.Allocate(size)
 }
 
 func (r *Runtime) free(ptr uint32) error {
-	return r.allocator.Deallocate(ptr)
+	return r.ctx.allocator.Deallocate(ptr)
 }

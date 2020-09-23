@@ -44,17 +44,17 @@ func TestRequestedBlockIDs(t *testing.T) {
 
 	node := createTestService(t, config)
 
-	hasRequestedBlockID := node.syncer.hasRequestedBlockID(1)
+	hasRequestedBlockID := node.requestTracker.hasRequestedBlockID(1)
 	require.Equal(t, false, hasRequestedBlockID)
 
-	node.syncer.addRequestedBlockID(1)
+	node.requestTracker.addRequestedBlockID(1)
 
-	hasRequestedBlockID = node.syncer.hasRequestedBlockID(1)
+	hasRequestedBlockID = node.requestTracker.hasRequestedBlockID(1)
 	require.Equal(t, true, hasRequestedBlockID)
 
-	node.syncer.removeRequestedBlockID(1)
+	node.requestTracker.removeRequestedBlockID(1)
 
-	hasRequestedBlockID = node.syncer.hasRequestedBlockID(1)
+	hasRequestedBlockID = node.requestTracker.hasRequestedBlockID(1)
 	require.Equal(t, false, hasRequestedBlockID)
 }
 
@@ -67,9 +67,7 @@ func TestHandleStatusMessage(t *testing.T) {
 	defer utils.RemoveTestDir(t)
 
 	heightA := big.NewInt(3)
-	msgRecA := make(chan Message)
-	syncChan := make(chan *big.Int)
-
+	mmhA := new(MockMessageHandler)
 	configA := &Config{
 		BasePath:    basePathA,
 		BlockState:  newMockBlockState(heightA),
@@ -77,8 +75,7 @@ func TestHandleStatusMessage(t *testing.T) {
 		RandSeed:    1,
 		NoBootstrap: true,
 		NoMDNS:      true,
-		MsgRec:      msgRecA,
-		SyncChan:    syncChan,
+		Syncer:      newMockSyncer(),
 	}
 
 	nodeA := createTestService(t, configA)
@@ -103,12 +100,12 @@ func TestHandleStatusMessage(t *testing.T) {
 	}
 
 	// simulate host status message sent from core service on startup
-	msgRecA <- testStatusMessage
+	mmhA.HandleMessage(testStatusMessage)
 
 	basePathB := utils.NewTestBasePath(t, "nodeB")
 
 	heightB := big.NewInt(1)
-	msgRecB := make(chan Message)
+	mmhB := new(MockMessageHandler)
 
 	configB := &Config{
 		BasePath:    basePathB,
@@ -117,8 +114,7 @@ func TestHandleStatusMessage(t *testing.T) {
 		RandSeed:    2,
 		NoBootstrap: true,
 		NoMDNS:      true,
-		MsgRec:      msgRecB,
-		SyncChan:    syncChan,
+		Syncer:      newMockSyncer(),
 	}
 
 	nodeB := createTestService(t, configB)
@@ -127,7 +123,7 @@ func TestHandleStatusMessage(t *testing.T) {
 	nodeB.noGossip = true
 
 	// simulate host status message sent from core service on startup
-	msgRecB <- testStatusMessage
+	mmhB.HandleMessage(testStatusMessage)
 
 	addrInfosB, err := nodeB.host.addrInfos()
 	require.Nil(t, err)
@@ -145,15 +141,10 @@ func TestHandleStatusMessage(t *testing.T) {
 		t.Error("node B did not confirm status of node A")
 	}
 
-	select {
-	case num := <-syncChan:
-		require.NotNil(t, num)
+	num := nodeB.syncer.(*mockSyncer).highestSeen
+	require.NotNil(t, num)
 
-		if num.Cmp(heightA) != 0 {
-			t.Fatalf("Fail: got %d expected %d", num, heightA)
-		}
-
-	case <-time.After(TestMessageTimeout):
-		t.Error("node B timeout waiting for message from node A")
+	if num.Cmp(heightA) != 0 {
+		t.Fatalf("Fail: got %d expected %d", num, heightA)
 	}
 }

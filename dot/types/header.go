@@ -105,10 +105,20 @@ func (bh *Header) Encode() ([]byte, error) {
 	return scale.Encode(bh)
 }
 
+// MustEncode returns the SCALE encoded header and panics if it fails to encode
+func (bh *Header) MustEncode() []byte {
+	enc, err := bh.Encode()
+	if err != nil {
+		panic(err)
+	}
+	return enc
+}
+
 // Decode decodes the SCALE encoded input into this header
-func (bh *Header) Decode(in []byte) error {
-	_, err := scale.Decode(in, bh)
-	return err
+func (bh *Header) Decode(r io.Reader) (*Header, error) {
+	sd := scale.Decoder{Reader: r}
+	_, err := sd.Decode(bh)
+	return bh, err
 }
 
 // AsOptional returns the Header as an optional.Header

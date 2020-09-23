@@ -18,7 +18,6 @@ package network
 
 import (
 	"math/big"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -67,28 +66,24 @@ func createTestService(t *testing.T, cfg *Config) (srvc *Service) {
 
 	cfg.ProtocolID = TestProtocolID // default "/gossamer/gssmr/0"
 
-	if cfg.MsgRec == nil {
-		cfg.MsgRec = make(chan Message, 10)
+	if cfg.LogLvl == 0 {
+		cfg.LogLvl = 3
 	}
 
-	if cfg.MsgSend == nil {
-		cfg.MsgSend = make(chan Message, 10)
-	}
-
-	if cfg.SyncChan == nil {
-		cfg.SyncChan = make(chan *big.Int, 10)
+	if cfg.Syncer == nil {
+		cfg.Syncer = newMockSyncer()
 	}
 
 	srvc, err := NewService(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	err = srvc.Start()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
+	t.Cleanup(func() {
+		utils.RemoveTestDir(t)
+		srvc.Stop()
+	})
 	return srvc
 }
 
@@ -110,6 +105,14 @@ func TestStartService(t *testing.T) {
 	node.Stop()
 }
 
+type MockMessageHandler struct {
+	Message Message
+}
+
+func (m *MockMessageHandler) HandleMessage(msg Message) {
+	m.Message = msg
+}
+
 // test broacast messages from core service
 func TestBroadcastMessages(t *testing.T) {
 	basePathA := utils.NewTestBasePath(t, "nodeA")
@@ -117,15 +120,12 @@ func TestBroadcastMessages(t *testing.T) {
 	// removes all data directories created within test directory
 	defer utils.RemoveTestDir(t)
 
-	msgRecA := make(chan Message)
-
 	configA := &Config{
 		BasePath:    basePathA,
 		Port:        7001,
 		RandSeed:    1,
 		NoBootstrap: true,
 		NoMDNS:      true,
-		MsgRec:      msgRecA,
 	}
 
 	nodeA := createTestService(t, configA)
@@ -136,15 +136,14 @@ func TestBroadcastMessages(t *testing.T) {
 
 	basePathB := utils.NewTestBasePath(t, "nodeB")
 
-	msgSendB := make(chan Message)
-
+	mmhB := new(MockMessageHandler)
 	configB := &Config{
-		BasePath:    basePathB,
-		Port:        7002,
-		RandSeed:    2,
-		NoBootstrap: true,
-		NoMDNS:      true,
-		MsgSend:     msgSendB,
+		BasePath:       basePathB,
+		Port:           7002,
+		RandSeed:       2,
+		NoBootstrap:    true,
+		NoMDNS:         true,
+		MessageHandler: mmhB,
 	}
 
 	nodeB := createTestService(t, configB)
@@ -164,34 +163,20 @@ func TestBroadcastMessages(t *testing.T) {
 		time.Sleep(TestBackoffTimeout)
 		err = nodeA.host.connect(*addrInfosB[0])
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// simulate message sent from core service
-	msgRecA <- TestMessage
+	nodeA.SendMessage(TestMessage)
+	time.Sleep(time.Second)
 
-	select {
-	case msg := <-msgSendB:
-		if !reflect.DeepEqual(msg, TestMessage) {
-			t.Error(
-				"node B received unexpected message from node A",
-				"\nexpected:", TestMessage,
-				"\nreceived:", msg,
-			)
-		}
-	case <-time.After(TestMessageTimeout):
-		t.Error("node B timeout waiting for message")
-	}
+	require.Equal(t, TestMessage, mmhB.Message)
 }
 
-func TestHandleMessage_BlockResponse(t *testing.T) {
+func TestHandleMessage_BlockAnnounce(t *testing.T) {
 	basePath := utils.NewTestBasePath(t, "nodeA")
 
 	// removes all data directories created within test directory
 	defer utils.RemoveTestDir(t)
-
-	msgSend := make(chan Message, 4)
 
 	config := &Config{
 		BasePath:    basePath,
@@ -200,7 +185,30 @@ func TestHandleMessage_BlockResponse(t *testing.T) {
 		NoBootstrap: true,
 		NoMDNS:      true,
 		NoStatus:    true,
-		MsgSend:     msgSend,
+	}
+
+	s := createTestService(t, config)
+
+	peerID := peer.ID("noot")
+	msg := &BlockAnnounceMessage{
+		Number: big.NewInt(10),
+	}
+
+	s.handleMessage(peerID, msg)
+	require.True(t, s.requestTracker.hasRequestedBlockID(99))
+}
+
+func TestHandleSyncMessage_BlockResponse(t *testing.T) {
+	basePath := utils.NewTestBasePath(t, "nodeA")
+	defer utils.RemoveTestDir(t)
+
+	config := &Config{
+		BasePath:    basePath,
+		Port:        7001,
+		RandSeed:    1,
+		NoBootstrap: true,
+		NoMDNS:      true,
+		NoStatus:    true,
 	}
 
 	s := createTestService(t, config)
@@ -211,53 +219,11 @@ func TestHandleMessage_BlockResponse(t *testing.T) {
 		ID: msgID,
 	}
 
-	s.syncer.addRequestedBlockID(msgID)
+	s.requestTracker.addRequestedBlockID(msgID)
+	s.handleSyncMessage(peerID, msg)
 
-	s.handleMessage(peerID, msg)
-	if s.syncer.hasRequestedBlockID(msgID) {
+	if s.requestTracker.hasRequestedBlockID(msgID) {
 		t.Fatal("Fail: should have removed ID")
-	}
-
-	select {
-	case recv := <-msgSend:
-		if !reflect.DeepEqual(recv, msg) {
-			t.Error(
-				"node B received unexpected message",
-				"\nexpected:", msg,
-				"\nreceived:", recv,
-			)
-		}
-	case <-time.After(TestMessageTimeout):
-		t.Error("timeout waiting for message")
-	}
-
-	msg = &BlockResponseMessage{
-		ID: 77,
-	}
-
-	s.handleMessage(peerID, msg)
-
-	select {
-	case <-msgSend:
-		t.Fatal("Fail: should not have sent msg")
-	case <-time.After(TestMessageTimeout):
-		// expected
-	}
-
-	reqMsg := &BlockRequestMessage{}
-	s.handleMessage(peerID, reqMsg)
-
-	select {
-	case recv := <-msgSend:
-		if !reflect.DeepEqual(recv, reqMsg) {
-			t.Error(
-				"node B received unexpected message",
-				"\nexpected:", reqMsg,
-				"\nreceived:", recv,
-			)
-		}
-	case <-time.After(TestMessageTimeout):
-		t.Error("timeout waiting for message")
 	}
 }
 

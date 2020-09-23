@@ -24,7 +24,6 @@ import (
 	"regexp"
 
 	"github.com/ChainSafe/gossamer/dot/types"
-
 	"github.com/ChainSafe/gossamer/lib/common"
 )
 
@@ -33,6 +32,9 @@ type ChainHashRequest string
 
 // ChainBlockNumberRequest interface can accept string, float64 or []
 type ChainBlockNumberRequest interface{}
+
+// ChainIntRequest represents an integer
+type ChainIntRequest uint64
 
 // ChainBlockHeaderResponse struct
 type ChainBlockHeaderResponse struct {
@@ -106,7 +108,7 @@ func (cm *ChainModule) GetBlock(r *http.Request, req *ChainHashRequest, res *Cha
 func (cm *ChainModule) GetBlockHash(r *http.Request, req *ChainBlockNumberRequest, res *ChainHashResponse) error {
 	// if request is empty, return highest hash
 	if *req == nil || reflect.ValueOf(*req).Len() == 0 {
-		*res = cm.blockAPI.HighestBlockHash().String()
+		*res = cm.blockAPI.BestBlockHash().String()
 		return nil
 	}
 
@@ -126,8 +128,28 @@ func (cm *ChainModule) GetHead(r *http.Request, req *ChainBlockNumberRequest, re
 	return cm.GetBlockHash(r, req, res)
 }
 
-// GetFinalizedHead isn't implemented properly yet.
-func (cm *ChainModule) GetFinalizedHead(r *http.Request, req *EmptyRequest, res *ChainHashResponse) {
+// GetFinalizedHead returns the most recently finalized block hash
+func (cm *ChainModule) GetFinalizedHead(r *http.Request, req *EmptyRequest, res *ChainHashResponse) error {
+	h, err := cm.blockAPI.GetFinalizedHash(0, 0)
+	if err != nil {
+		return err
+	}
+
+	*res = common.BytesToHex(h[:])
+	return nil
+}
+
+// GetFinalizedHeadByRound returns the hash of the block finalized at the given round and setID
+func (cm *ChainModule) GetFinalizedHeadByRound(r *http.Request, req *[]ChainIntRequest, res *ChainHashResponse) error {
+	round := (uint64)((*req)[0])
+	setID := (uint64)((*req)[1])
+	h, err := cm.blockAPI.GetFinalizedHash(round, setID)
+	if err != nil {
+		return err
+	}
+
+	*res = common.BytesToHex(h[:])
+	return nil
 }
 
 //GetHeader Get header of a relay chain block. If no block hash is provided, the latest block header will be returned.
@@ -165,7 +187,7 @@ func (cm *ChainModule) SubscribeNewHeads(r *http.Request, req *EmptyRequest, res
 
 func (cm *ChainModule) hashLookup(req *ChainHashRequest) (common.Hash, error) {
 	if len(*req) == 0 {
-		hash := cm.blockAPI.HighestBlockHash()
+		hash := cm.blockAPI.BestBlockHash()
 		return hash, nil
 	}
 	return common.HexToHash(string(*req))

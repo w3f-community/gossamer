@@ -19,57 +19,70 @@ package rpc
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"sync"
 
 	"github.com/ChainSafe/gossamer/dot/rpc/modules"
-	"github.com/ChainSafe/gossamer/dot/types"
+	log "github.com/ChainSafe/log15"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/rpc/v2"
 	"github.com/gorilla/websocket"
-
-	log "github.com/ChainSafe/log15"
 )
 
 // HTTPServer gateway for RPC server
 type HTTPServer struct {
+	logger       log.Logger
 	rpcServer    *rpc.Server // Actual RPC call handler
 	serverConfig *HTTPServerConfig
+	wsConns      []*WSConn
 }
 
 // HTTPServerConfig configures the HTTPServer
 type HTTPServerConfig struct {
-	BlockAPI               modules.BlockAPI
-	StorageAPI             modules.StorageAPI
-	NetworkAPI             modules.NetworkAPI
-	CoreAPI                modules.CoreAPI
-	RuntimeAPI             modules.RuntimeAPI
-	TransactionQueueAPI    modules.TransactionQueueAPI
-	RPCAPI                 modules.RPCAPI
-	SystemAPI              modules.SystemAPI
-	Host                   string
-	RPCPort                uint32
-	WSEnabled              bool
-	WSPort                 uint32
-	Modules                []string
-	WSSubscriptions        map[uint32]*WebSocketSubscription
-	BlockAddedReceiver     chan *types.Block
-	BlockAddedReceiverDone chan struct{}
+	LogLvl              log.Lvl
+	BlockAPI            modules.BlockAPI
+	StorageAPI          modules.StorageAPI
+	NetworkAPI          modules.NetworkAPI
+	CoreAPI             modules.CoreAPI
+	BlockProducerAPI    modules.BlockProducerAPI
+	RuntimeAPI          modules.RuntimeAPI
+	TransactionQueueAPI modules.TransactionQueueAPI
+	RPCAPI              modules.RPCAPI
+	SystemAPI           modules.SystemAPI
+	Host                string
+	RPCPort             uint32
+	WSEnabled           bool
+	WSPort              uint32
+	Modules             []string
 }
 
-// WebSocketSubscription holds subscription details
-type WebSocketSubscription struct {
-	WSConnection     *websocket.Conn
-	SubscriptionType int
+// WSConn struct to hold WebSocket Connection references
+type WSConn struct {
+	wsconn             *websocket.Conn
+	mu                 sync.Mutex
+	blockSubChannels   map[int]byte
+	storageSubChannels map[int]byte
+	qtyListeners       int
+	subscriptions      map[int]Listener
+	storageAPI         modules.StorageAPI
+	blockAPI           modules.BlockAPI
 }
+
+var logger log.Logger
 
 // NewHTTPServer creates a new http server and registers an associated rpc server
 func NewHTTPServer(cfg *HTTPServerConfig) *HTTPServer {
+	logger = log.New("pkg", "rpc")
+	h := log.StreamHandler(os.Stdout, log.TerminalFormat())
+	h = log.CallerFileHandler(h)
+	logger.SetHandler(log.LvlFilterHandler(cfg.LogLvl, h))
+
 	server := &HTTPServer{
+		logger:       logger,
 		rpcServer:    rpc.NewServer(),
 		serverConfig: cfg,
 	}
-	if cfg.WSSubscriptions == nil {
-		cfg.WSSubscriptions = make(map[uint32]*WebSocketSubscription)
-	}
+
 	server.RegisterModules(cfg.Modules)
 	return server
 }
@@ -78,28 +91,30 @@ func NewHTTPServer(cfg *HTTPServerConfig) *HTTPServer {
 func (h *HTTPServer) RegisterModules(mods []string) {
 
 	for _, mod := range mods {
-		log.Debug("[rpc] Enabling rpc module", "module", mod)
+		h.logger.Debug("Enabling rpc module", "module", mod)
 		var srvc interface{}
 		switch mod {
 		case "system":
 			srvc = modules.NewSystemModule(h.serverConfig.NetworkAPI, h.serverConfig.SystemAPI)
 		case "author":
-			srvc = modules.NewAuthorModule(h.serverConfig.CoreAPI, h.serverConfig.RuntimeAPI, h.serverConfig.TransactionQueueAPI)
+			srvc = modules.NewAuthorModule(h.logger, h.serverConfig.CoreAPI, h.serverConfig.RuntimeAPI, h.serverConfig.TransactionQueueAPI)
 		case "chain":
 			srvc = modules.NewChainModule(h.serverConfig.BlockAPI)
 		case "state":
 			srvc = modules.NewStateModule(h.serverConfig.NetworkAPI, h.serverConfig.StorageAPI, h.serverConfig.CoreAPI)
 		case "rpc":
 			srvc = modules.NewRPCModule(h.serverConfig.RPCAPI)
+		case "dev":
+			srvc = modules.NewDevModule(h.serverConfig.BlockProducerAPI, h.serverConfig.NetworkAPI)
 		default:
-			log.Warn("[rpc] Unrecognized module", "module", mod)
+			h.logger.Warn("Unrecognized module", "module", mod)
 			continue
 		}
 
 		err := h.rpcServer.RegisterService(srvc, mod)
 
 		if err != nil {
-			log.Warn("[rpc] Failed to register module", "mod", mod, "err", err)
+			h.logger.Warn("Failed to register module", "mod", mod, "err", err)
 		}
 
 		h.serverConfig.RPCAPI.BuildMethodNames(srvc, mod)
@@ -114,13 +129,13 @@ func (h *HTTPServer) Start() error {
 	h.rpcServer.RegisterCodec(NewDotUpCodec(), "application/json")
 	h.rpcServer.RegisterCodec(NewDotUpCodec(), "application/json;charset=UTF-8")
 
-	log.Info("[rpc] Starting HTTP Server...", "host", h.serverConfig.Host, "port", h.serverConfig.RPCPort)
+	h.logger.Info("Starting HTTP Server...", "host", h.serverConfig.Host, "port", h.serverConfig.RPCPort)
 	r := mux.NewRouter()
 	r.Handle("/", h.rpcServer)
 	go func() {
 		err := http.ListenAndServe(fmt.Sprintf(":%d", h.serverConfig.RPCPort), r)
 		if err != nil {
-			log.Error("[rpc] http error", "err", err)
+			h.logger.Error("http error", "err", err)
 		}
 	}()
 
@@ -128,23 +143,15 @@ func (h *HTTPServer) Start() error {
 		return nil
 	}
 
-	log.Info("[rpc] Starting WebSocket Server...", "host", h.serverConfig.Host, "port", h.serverConfig.WSPort)
+	h.logger.Info("Starting WebSocket Server...", "host", h.serverConfig.Host, "port", h.serverConfig.WSPort)
 	ws := mux.NewRouter()
 	ws.Handle("/", h)
 	go func() {
 		err := http.ListenAndServe(fmt.Sprintf(":%d", h.serverConfig.WSPort), ws)
 		if err != nil {
-			log.Error("[rpc] http error", "err", err)
+			h.logger.Error("http error", "err", err)
 		}
 	}()
-
-	// init and start block received listener routine
-	if h.serverConfig.BlockAPI != nil {
-		h.serverConfig.BlockAddedReceiver = make(chan *types.Block)
-		h.serverConfig.BlockAddedReceiverDone = make(chan struct{})
-		h.serverConfig.BlockAPI.SetBlockAddedChannel(h.serverConfig.BlockAddedReceiver, h.serverConfig.BlockAddedReceiverDone)
-		go h.blockReceivedListener()
-	}
 
 	return nil
 }
@@ -152,7 +159,24 @@ func (h *HTTPServer) Start() error {
 // Stop stops the server
 func (h *HTTPServer) Stop() error {
 	if h.serverConfig.WSEnabled {
-		close(h.serverConfig.BlockAddedReceiverDone) // notify sender we're done receiving so it can close
+		// close all channels and websocket connections
+		for _, conn := range h.wsConns {
+			for _, sub := range conn.subscriptions {
+				switch v := sub.(type) {
+				case *StorageChangeListener:
+					h.serverConfig.StorageAPI.UnregisterStorageChangeChannel(v.chanID)
+					close(v.channel)
+				case *BlockListener:
+					h.serverConfig.BlockAPI.UnregisterImportedChannel(v.chanID)
+					close(v.channel)
+				}
+			}
+
+			err := conn.wsconn.Close()
+			if err != nil {
+				h.logger.Error("error closing websocket connection", "error", err)
+			}
+		}
 	}
 	return nil
 }

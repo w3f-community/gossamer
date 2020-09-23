@@ -24,80 +24,21 @@ import (
 
 	"github.com/ChainSafe/gossamer/dot/network"
 	"github.com/ChainSafe/gossamer/dot/types"
-	"github.com/ChainSafe/gossamer/lib/babe"
-	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/crypto/sr25519"
 	"github.com/ChainSafe/gossamer/lib/keystore"
 	"github.com/ChainSafe/gossamer/lib/runtime"
 	"github.com/ChainSafe/gossamer/lib/transaction"
 	"github.com/ChainSafe/gossamer/lib/trie"
-
+	log "github.com/ChainSafe/log15"
 	"github.com/stretchr/testify/require"
 )
 
-// testMessageTimeout is the wait time for messages to be exchanged
-var testMessageTimeout = time.Second
-
-var babeAuthoritiesKey, _ = common.HexToBytes("0x886726f904d8372fdabb7707870c2fad")
-
-// newTestServiceWithFirstBlock creates a new test service with a test block
-func newTestServiceWithFirstBlock(t *testing.T) *Service {
-	tt := trie.NewEmptyTrie()
-	rt := runtime.NewTestRuntimeWithTrie(t, runtime.NODE_RUNTIME, tt)
-
-	kp, err := sr25519.GenerateKeypair()
-	require.Nil(t, err)
-
-	// TODO: make a helper function to clean this up
-	err = tt.Put(babeAuthoritiesKey, append(append([]byte{4}, kp.Public().Encode()...), []byte{1, 0, 0, 0, 0, 0, 0, 0}...))
-	require.Nil(t, err)
-
-	ks := keystore.NewKeystore()
-	ks.Insert(kp)
-
-	cfg := &Config{
-		Runtime:         rt,
-		Keystore:        ks,
-		IsBabeAuthority: true,
-	}
-
-	s := NewTestService(t, cfg)
-
-	preDigest, err := common.HexToBytes("0x064241424538e93dcef2efc275b72b4fa748332dc4c9f13be1125909cf90c8e9109c45da16b04bc5fdf9fe06a4f35e4ae4ed7e251ff9ee3d0d840c8237c9fb9057442dbf00f210d697a7b4959f792a81b948ff88937e30bf9709a8ab1314f71284da89a40000000000000000001100000000000000")
-	require.Nil(t, err)
-
-	nextEpochData := &babe.NextEpochDescriptor{
-		Authorities: s.bs.AuthorityData(),
-	}
-
-	consensusDigest := &types.ConsensusDigest{
-		ConsensusEngineID: types.BabeEngineID,
-		Data:              nextEpochData.Encode(),
-	}
-
-	conDigest := consensusDigest.Encode()
-
-	header := &types.Header{
-		ParentHash: testGenesisHeader.Hash(),
-		Number:     big.NewInt(1),
-		Digest:     [][]byte{preDigest, conDigest},
-	}
-
-	firstBlock := &types.Block{
-		Header: header,
-		Body:   &types.Body{},
-	}
-
-	err = s.blockState.AddBlock(firstBlock)
-	require.Nil(t, err)
-
-	return s
-}
-
-func addTestBlocksToState(t *testing.T, depth int, blockState BlockState) {
+func addTestBlocksToState(t *testing.T, depth int, blockState BlockState) []*types.Header {
 	previousHash := blockState.BestBlockHash()
 	previousNum, err := blockState.BestBlockNumber()
 	require.Nil(t, err)
+
+	headers := []*types.Header{}
 
 	for i := 1; i <= depth; i++ {
 		block := &types.Block{
@@ -113,7 +54,10 @@ func addTestBlocksToState(t *testing.T, depth int, blockState BlockState) {
 
 		err := blockState.AddBlock(block)
 		require.Nil(t, err)
+		headers = append(headers, block.Header)
 	}
+
+	return headers
 }
 
 func TestStartService(t *testing.T) {
@@ -129,25 +73,13 @@ func TestStartService(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestNotAuthority(t *testing.T) {
-	cfg := &Config{
-		Keystore:        keystore.NewKeystore(),
-		IsBabeAuthority: false,
-	}
-
-	s := NewTestService(t, cfg)
-	if s.bs != nil {
-		t.Fatal("Fail: should not have babe session")
-	}
-}
-
 func TestAnnounceBlock(t *testing.T) {
-	msgSend := make(chan network.Message)
+	net := new(mockNetwork)
 	newBlocks := make(chan types.Block)
 
 	cfg := &Config{
 		NewBlocks: newBlocks,
-		MsgSend:   msgSend,
+		Network:   net,
 	}
 
 	s := NewTestService(t, cfg)
@@ -169,34 +101,28 @@ func TestAnnounceBlock(t *testing.T) {
 		Body: &types.Body{},
 	}
 
-	select {
-	case msg := <-msgSend:
-		msgType := msg.GetType()
-		require.Equal(t, network.BlockAnnounceMsgType, msgType)
-	case <-time.After(testMessageTimeout):
-		t.Error("timeout waiting for message")
-	}
+	time.Sleep(testMessageTimeout)
+	require.Equal(t, network.BlockAnnounceMsgType, net.Message.Type())
 }
 
-func TestCheckForRuntimeChanges(t *testing.T) {
+func TestHandleRuntimeChanges(t *testing.T) {
 	tt := trie.NewEmptyTrie()
-	rt := runtime.NewTestRuntimeWithTrie(t, runtime.NODE_RUNTIME, tt)
+	rt := runtime.NewTestRuntimeWithTrie(t, runtime.NODE_RUNTIME, tt, log.LvlTrace)
 
 	kp, err := sr25519.GenerateKeypair()
 	require.Nil(t, err)
 
-	ks := keystore.NewKeystore()
-	ks.Insert(kp)
+	ks := keystore.NewGlobalKeystore()
+	ks.Acco.Insert(kp)
 
 	cfg := &Config{
 		Runtime:          rt,
 		Keystore:         ks,
 		TransactionQueue: transaction.NewPriorityQueue(),
-		IsBabeAuthority:  false,
+		IsBlockProducer:  false,
 	}
 
 	s := NewTestService(t, cfg)
-	s.started = 1
 
 	_, err = runtime.GetRuntimeBlob(runtime.TESTS_FP, runtime.TEST_WASM_URL)
 	require.Nil(t, err)
@@ -204,41 +130,65 @@ func TestCheckForRuntimeChanges(t *testing.T) {
 	testRuntime, err := ioutil.ReadFile(runtime.TESTS_FP)
 	require.Nil(t, err)
 
-	err = s.storageState.SetStorage([]byte(":code"), testRuntime)
+	ts, err := s.storageState.TrieState(nil)
+	require.NoError(t, err)
+
+	err = ts.Set([]byte(":code"), testRuntime)
 	require.Nil(t, err)
 
-	err = s.checkForRuntimeChanges()
-	require.Nil(t, err)
+	root, err := ts.Root()
+	require.NoError(t, err)
+
+	s.storageState.StoreTrie(root, ts)
+	head := &types.Header{
+		ParentHash: s.blockState.BestBlockHash(),
+		Number:     big.NewInt(1),
+		StateRoot:  root,
+		Digest:     [][]byte{},
+	}
+
+	err = s.blockState.AddBlock(&types.Block{
+		Header: head,
+		Body:   types.NewBody([]byte{}),
+	})
+	require.NoError(t, err)
+
+	bestHeader, err := s.blockState.BestBlockHeader()
+	require.NoError(t, err)
+	require.Equal(t, head, bestHeader)
+
+	err = s.handleRuntimeChanges(testGenesisHeader)
+	require.NoError(t, err)
 }
 
 func TestService_HasKey(t *testing.T) {
-	ks := keystore.NewKeystore()
+	ks := keystore.NewGlobalKeystore()
 	kr, err := keystore.NewSr25519Keyring()
 	require.NoError(t, err)
-	ks.Insert(kr.Alice)
+	ks.Acco.Insert(kr.Alice())
 
 	cfg := &Config{
 		Keystore: ks,
 	}
 	svc := NewTestService(t, cfg)
 
-	res, err := svc.HasKey(kr.Alice.Public().Hex(), "babe")
+	res, err := svc.HasKey(kr.Alice().Public().Hex(), "babe")
 	require.NoError(t, err)
 	require.True(t, res)
 }
 
 func TestService_HasKey_UnknownType(t *testing.T) {
-	ks := keystore.NewKeystore()
+	ks := keystore.NewGlobalKeystore()
 	kr, err := keystore.NewSr25519Keyring()
 	require.NoError(t, err)
-	ks.Insert(kr.Alice)
+	ks.Acco.Insert(kr.Alice())
 
 	cfg := &Config{
 		Keystore: ks,
 	}
 	svc := NewTestService(t, cfg)
 
-	res, err := svc.HasKey(kr.Alice.Public().Hex(), "xxxx")
+	res, err := svc.HasKey(kr.Alice().Public().Hex(), "xxxx")
 	require.EqualError(t, err, "unknown key type: xxxx")
 	require.False(t, res)
 }

@@ -25,14 +25,29 @@ import (
 
 // BlockState is the interface required by GRANDPA into the block state
 type BlockState interface {
+	GenesisHash() common.Hash
 	HasHeader(hash common.Hash) (bool, error)
 	GetHeader(hash common.Hash) (*types.Header, error)
 	GetHeaderByNumber(num *big.Int) (*types.Header, error)
 	IsDescendantOf(parent, child common.Hash) (bool, error)
 	HighestCommonAncestor(a, b common.Hash) (common.Hash, error)
-	GetFinalizedHeader() (*types.Header, error)
-	SetFinalizedHash(hash common.Hash) error
+	HasFinalizedBlock(round, setID uint64) (bool, error)
+	GetFinalizedHeader(uint64, uint64) (*types.Header, error)
+	SetFinalizedHash(common.Hash, uint64, uint64) error
 	BestBlockHeader() (*types.Header, error)
+	BestBlockHash() common.Hash
 	Leaves() []common.Hash
 	BlocktreeAsString() string
+	RegisterImportedChannel(ch chan<- *types.Block) (byte, error)
+	UnregisterImportedChannel(id byte)
+	RegisterFinalizedChannel(ch chan<- *types.Header) (byte, error)
+	UnregisterFinalizedChannel(id byte)
+	SetJustification(hash common.Hash, data []byte) error
+	HasJustification(hash common.Hash) (bool, error)
+	GetJustification(hash common.Hash) ([]byte, error)
+}
+
+// DigestHandler is the interface required by GRANDPA for the digest handler
+type DigestHandler interface {
+	NextGrandpaAuthorityChange() uint64
 }

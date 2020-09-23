@@ -54,7 +54,7 @@ type Message interface {
 	Encode() ([]byte, error)
 	Decode(io.Reader) error
 	String() string
-	GetType() int
+	Type() int
 	IDString() string
 }
 
@@ -80,6 +80,9 @@ func decodeMessage(r io.Reader) (m Message, err error) {
 		err = m.Decode(r)
 	case TransactionMsgType:
 		m = new(TransactionMessage)
+		err = m.Decode(r)
+	case ConsensusMsgType:
+		m = new(ConsensusMessage)
 		err = m.Decode(r)
 	default:
 		return nil, fmt.Errorf("unsupported message type %d", msgType)
@@ -110,8 +113,8 @@ type StatusMessage struct {
 	ChainStatus         []byte
 }
 
-// GetType returns the StatusMsgType int
-func (sm *StatusMessage) GetType() int {
+// Type returns StatusMsgType
+func (sm *StatusMessage) Type() int {
 	return StatusMsgType
 }
 
@@ -159,8 +162,23 @@ type BlockRequestMessage struct {
 	Max           *optional.Uint32
 }
 
-// GetType int
-func (bm *BlockRequestMessage) GetType() int {
+// RequestedDataHeader flag for requesting header data
+const RequestedDataHeader = byte(1)
+
+// RequestedDataBody flag for requesting body data
+const RequestedDataBody = byte(2)
+
+// RequestedDataReceipt flag for requesting receipt data
+const RequestedDataReceipt = byte(4)
+
+// RequestedDataMessageQueue flag for requesting message queue data
+const RequestedDataMessageQueue = byte(8)
+
+// RequestedDataJustification flag for requesting justification data
+const RequestedDataJustification = byte(16)
+
+// Type returns BlockRequestMsgType
+func (bm *BlockRequestMessage) Type() int {
 	return BlockRequestMsgType
 }
 
@@ -276,7 +294,7 @@ func (bm *BlockRequestMessage) Decode(r io.Reader) error {
 
 // IDString Returns the ID of the block
 func (bm *BlockRequestMessage) IDString() string {
-	return string(bm.ID)
+	return fmt.Sprintf("%d", bm.ID)
 }
 
 // BlockAnnounceMessage is a state block header
@@ -288,8 +306,8 @@ type BlockAnnounceMessage struct {
 	Digest         [][]byte // any additional block info eg. logs, seal
 }
 
-// GetType int
-func (bm *BlockAnnounceMessage) GetType() int {
+// Type returns BlockAnnounceMsgType
+func (bm *BlockAnnounceMessage) Type() int {
 	return BlockAnnounceMsgType
 }
 
@@ -339,8 +357,8 @@ type BlockResponseMessage struct {
 	BlockData []*types.BlockData
 }
 
-// GetType int
-func (bm *BlockResponseMessage) GetType() int {
+// Type returns BlockResponseMsgType
+func (bm *BlockResponseMessage) Type() int {
 	return BlockResponseMsgType
 }
 
@@ -379,7 +397,7 @@ func (bm *BlockResponseMessage) Decode(r io.Reader) error {
 
 // IDString returns the ID of BlockResponseMessage
 func (bm *BlockResponseMessage) IDString() string {
-	return string(bm.ID)
+	return fmt.Sprintf("%d", bm.ID)
 }
 
 // TransactionMessage is a struct that holds reference to Extrinsics
@@ -387,8 +405,8 @@ type TransactionMessage struct {
 	Extrinsics []types.Extrinsic
 }
 
-// GetType returns the TransactionMsgType
-func (tm *TransactionMessage) GetType() int {
+// Type returns TransactionMsgType
+func (tm *TransactionMessage) Type() int {
 	return TransactionMsgType
 }
 
@@ -460,8 +478,8 @@ type ConsensusMessage struct {
 	Data []byte
 }
 
-// GetType returns the type
-func (cm *ConsensusMessage) GetType() int {
+// Type returns ConsensusMsgType
+func (cm *ConsensusMessage) Type() int {
 	return ConsensusMsgType
 }
 
@@ -473,9 +491,7 @@ func (cm *ConsensusMessage) String() string {
 // Encode encodes a block response message using SCALE and appends the type byte to the start
 func (cm *ConsensusMessage) Encode() ([]byte, error) {
 	encMsg := []byte{ConsensusMsgType}
-
 	encMsg = append(encMsg, cm.ConsensusEngineID.ToBytes()...)
-
 	return append(encMsg, cm.Data...), nil
 }
 

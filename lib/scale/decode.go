@@ -24,9 +24,15 @@ import (
 	"io"
 	"math/big"
 	"reflect"
+	"runtime"
+	"strings"
 
 	"github.com/ChainSafe/gossamer/lib/common"
 )
+
+// withCustom is true is custom encoding is supported. set to true by default.
+// only should be set to false for testing.
+var withCustom = true
 
 // Decoder is a wrapping around io.Reader
 type Decoder struct {
@@ -36,7 +42,9 @@ type Decoder struct {
 // Decode a byte array into interface
 func Decode(in []byte, t interface{}) (interface{}, error) {
 	buf := &bytes.Buffer{}
-	sd := Decoder{Reader: buf}
+	sd := Decoder{
+		Reader: buf,
+	}
 	_, err := buf.Write(in)
 	if err != nil {
 		return nil, err
@@ -68,8 +76,25 @@ func (sd *Decoder) Decode(t interface{}) (out interface{}, err error) {
 		_, err = sd.Reader.Read(b)
 		out = common.NewHash(b)
 	case [][32]byte, [][]byte:
-		out, err = sd.DecodeArray(t)
+		out, err = sd.DecodeSlice(t)
 	case interface{}:
+		// check if type has a custom Decode function defined
+		// but first, make sure that the function that called this function wasn't the type's Decode function,
+		// or else we will end up in an infinite recursive loop
+		pc, _, _, ok := runtime.Caller(1)
+		details := runtime.FuncForPC(pc)
+		var caller string
+		if ok && details != nil {
+			caller = details.Name()
+		}
+
+		// allow the call to DecodeCustom to proceed if the call comes from inside scale, and isn't a test
+		if !strings.Contains(caller, "Decode") && withCustom || (strings.Contains(caller, "scale") && !strings.Contains(caller, "test")) && withCustom {
+			if out, err = sd.DecodeCustom(t); err == nil {
+				return out, nil
+			}
+		}
+
 		out, err = sd.DecodeInterface(t)
 	default:
 		return nil, errors.New("decode error: unsupported type")
@@ -295,22 +320,68 @@ func (sd *Decoder) DecodeInterface(t interface{}) (interface{}, error) {
 	switch reflect.ValueOf(t).Kind() {
 	case reflect.Ptr:
 		switch reflect.ValueOf(t).Elem().Kind() {
-		case reflect.Slice, reflect.Array:
+		case reflect.Slice:
+			return sd.DecodeSlice(t)
+		case reflect.Array:
 			return sd.DecodeArray(t)
 		default:
 			return sd.DecodeTuple(t)
 		}
-	case reflect.Slice, reflect.Array:
-		return sd.DecodeArray(t)
+	case reflect.Slice:
+		return sd.DecodeSlice(t)
 	case reflect.Struct:
 		return sd.DecodeTuple(t)
+	case reflect.Array:
+		return sd.DecodeArray(t)
 	default:
 		return nil, fmt.Errorf("unexpected kind: %s", reflect.ValueOf(t).Kind())
 	}
 }
 
-// DecodeArray will decode array to interface
+// DecodeArray decodes a fixed-length array
 func (sd *Decoder) DecodeArray(t interface{}) (interface{}, error) {
+	v := reflect.ValueOf(t)
+	var err error
+
+	// this means t is a custom type with an underlying array.
+	// not handled, requires a custom decode function
+	switch v.Kind() {
+	case reflect.Ptr:
+		return nil, errors.New("unsupported type")
+	}
+
+	length := v.Len()
+	arr := reflect.New(reflect.TypeOf(t)).Elem()
+	if length == 0 {
+		return arr.Interface(), nil
+	}
+
+	for i := 0; i < length; i++ {
+		elem := v.Index(i)
+		switch elem.Interface().(type) {
+		case byte:
+			var b byte
+			b, err = sd.ReadByte()
+			arr.Index(i).Set(reflect.ValueOf(b))
+		default:
+			var res interface{}
+			res, err = sd.DecodeCustom(elem.Interface())
+			if err != nil {
+				return nil, err
+			}
+			elem.Set(reflect.ValueOf(res))
+		}
+
+		if err != nil {
+			break
+		}
+	}
+
+	return arr.Interface(), nil
+}
+
+// DecodeSlice will decode a slice
+func (sd *Decoder) DecodeSlice(t interface{}) (interface{}, error) {
 	v := reflect.ValueOf(t)
 	var err error
 	var o interface{}
@@ -409,7 +480,7 @@ func (sd *Decoder) DecodeTuple(t interface{}) (interface{}, error) { //nolint
 					*ptr = o.([]byte)
 				}
 			case *[][]byte:
-				if o, err = sd.DecodeArray([][]byte{}); err == nil {
+				if o, err = sd.DecodeSlice([][]byte{}); err == nil {
 					*ptr = o.([][]byte)
 				}
 			case *int8:
@@ -466,6 +537,11 @@ func (sd *Decoder) DecodeTuple(t interface{}) (interface{}, error) { //nolint
 				if _, err = sd.Reader.Read(b); err == nil {
 					copy((*ptr)[:], b)
 				}
+			case *[64]byte:
+				b := make([]byte, 64)
+				if _, err = sd.Reader.Read(b); err == nil {
+					copy((*ptr)[:], b)
+				}
 			case *string:
 				if o, err = sd.DecodeByteArray(); err == nil {
 					// get the pointer to the value and set the value
@@ -476,7 +552,11 @@ func (sd *Decoder) DecodeTuple(t interface{}) (interface{}, error) { //nolint
 					*ptr = o.([]string)
 				}
 			default:
-				var o interface{}
+				if o, err = sd.DecodeCustom(fieldValue); err == nil {
+					field.Set(reflect.ValueOf(o))
+					continue
+				}
+
 				// TODO: clean up this function, can use field.Set everywhere (remove switch case?)
 				if o, err = sd.Decode(v.Field(i).Interface()); err == nil {
 					field.Set(reflect.ValueOf(o))

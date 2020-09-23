@@ -22,6 +22,7 @@ import (
 
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/runtime"
+	"github.com/ChainSafe/gossamer/lib/scale"
 )
 
 // StateCallRequest holds json fields
@@ -132,14 +133,17 @@ func (sm *StateModule) GetPairs(r *http.Request, req *[]string, res *[]interface
 	reqBytes, _ := common.HexToBytes(pReq[0])
 
 	if len(reqBytes) < 1 {
-		pairs := sm.storageAPI.Entries()
+		pairs, err := sm.storageAPI.Entries(nil)
+		if err != nil {
+			return err
+		}
 		for k, v := range pairs {
 			*res = append(*res, []string{"0x" + hex.EncodeToString([]byte(k)), "0x" + hex.EncodeToString(v)})
 		}
 	} else {
 		// TODO this should return all keys with same prefix, currently only returning
 		//  matches.  Implement when #837 is done.
-		resI, err := sm.storageAPI.GetStorage(reqBytes)
+		resI, err := sm.storageAPI.GetStorage(nil, reqBytes)
 		if err != nil {
 			return err
 		}
@@ -188,7 +192,11 @@ func (sm *StateModule) GetKeys(r *http.Request, req *StateStorageKeyRequest, res
 func (sm *StateModule) GetMetadata(r *http.Request, req *StateRuntimeMetadataQuery, res *string) error {
 	// TODO implement change storage trie so that block hash parameter works (See issue #834)
 	metadata, err := sm.coreAPI.GetMetadata()
-	*res = common.BytesToHex(metadata)
+	if err != nil {
+		return err
+	}
+	decoded, err := scale.Decode(metadata, []byte{})
+	*res = common.BytesToHex(decoded.([]byte))
 	return err
 }
 
@@ -209,12 +217,30 @@ func (sm *StateModule) GetRuntimeVersion(r *http.Request, req *StateBlockHashQue
 
 // GetStorage Returns a storage entry at a specific block's state. If not block hash is provided, the latest value is returned.
 func (sm *StateModule) GetStorage(r *http.Request, req *[]string, res *interface{}) error {
-	// TODO implement change storage trie so that block hash parameter works (See issue #834)
 	pReq := *req
 	reqBytes, _ := common.HexToBytes(pReq[0]) // no need to catch error here
-	item, err := sm.storageAPI.GetStorage(reqBytes)
-	if err != nil {
-		return err
+
+	var (
+		item  []byte
+		bhash common.Hash
+		err   error
+	)
+
+	if len(pReq) > 1 {
+		bhash, err = common.HexToHash(pReq[1])
+		if err != nil {
+			return err
+		}
+
+		item, err = sm.storageAPI.GetStorageByBlockHash(bhash, reqBytes)
+		if err != nil {
+			return err
+		}
+	} else {
+		item, err = sm.storageAPI.GetStorage(nil, reqBytes)
+		if err != nil {
+			return err
+		}
 	}
 
 	if len(item) > 0 {
@@ -231,11 +257,29 @@ func (sm *StateModule) GetStorage(r *http.Request, req *[]string, res *interface
 //  TODO implement change storage trie so that block hash parameter works (See issue #834)
 func (sm *StateModule) GetStorageHash(r *http.Request, req *[]string, res *interface{}) error {
 	pReq := *req
-	reqByte, _ := common.HexToBytes(pReq[0])
+	reqBytes, _ := common.HexToBytes(pReq[0])
 
-	item, err := sm.storageAPI.GetStorage(reqByte)
-	if err != nil {
-		return err
+	var (
+		item  []byte
+		bhash common.Hash
+		err   error
+	)
+
+	if len(pReq) > 1 {
+		bhash, err = common.HexToHash(pReq[1])
+		if err != nil {
+			return err
+		}
+
+		item, err = sm.storageAPI.GetStorageByBlockHash(bhash, reqBytes)
+		if err != nil {
+			return err
+		}
+	} else {
+		item, err = sm.storageAPI.GetStorage(nil, reqBytes)
+		if err != nil {
+			return err
+		}
 	}
 
 	if len(item) > 0 {
@@ -252,11 +296,29 @@ func (sm *StateModule) GetStorageHash(r *http.Request, req *[]string, res *inter
 // TODO implement change storage trie so that block hash parameter works (See issue #834)
 func (sm *StateModule) GetStorageSize(r *http.Request, req *[]string, res *interface{}) error {
 	pReq := *req
-	reqByte, _ := common.HexToBytes(pReq[0])
+	reqBytes, _ := common.HexToBytes(pReq[0])
 
-	item, err := sm.storageAPI.GetStorage(reqByte)
-	if err != nil {
-		return err
+	var (
+		item  []byte
+		bhash common.Hash
+		err   error
+	)
+
+	if len(pReq) > 1 {
+		bhash, err = common.HexToHash(pReq[1])
+		if err != nil {
+			return err
+		}
+
+		item, err = sm.storageAPI.GetStorageByBlockHash(bhash, reqBytes)
+		if err != nil {
+			return err
+		}
+	} else {
+		item, err = sm.storageAPI.GetStorage(nil, reqBytes)
+		if err != nil {
+			return err
+		}
 	}
 
 	if len(item) > 0 {
@@ -280,9 +342,11 @@ func (sm *StateModule) SubscribeRuntimeVersion(r *http.Request, req *StateStorag
 	return sm.GetRuntimeVersion(r, nil, res)
 }
 
-// SubscribeStorage isn't implemented properly yet.
-func (sm *StateModule) SubscribeStorage(r *http.Request, req *StateStorageQueryRangeRequest, res *StorageChangeSetResponse) {
-	// TODO implement change storage trie so that block hash parameter works (See issue #834)
+// SubscribeStorage Storage subscription. If storage keys are specified, it creates a message for each block which
+//  changes the specified storage keys. If none are specified, then it creates a message for every block.
+//  This endpoint communicates over the Websocket protocol, but this func should remain here so it's added to rpc_methods list
+func (sm *StateModule) SubscribeStorage(r *http.Request, req *StateStorageQueryRangeRequest, res *StorageChangeSetResponse) error {
+	return nil
 }
 
 func convertAPIs(in []*runtime.API_Item) []interface{} {

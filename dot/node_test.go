@@ -21,34 +21,43 @@ import (
 	"encoding/binary"
 	"math/big"
 	"reflect"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ChainSafe/gossamer/dot/core"
 	"github.com/ChainSafe/gossamer/dot/state"
 	"github.com/ChainSafe/gossamer/dot/types"
+	"github.com/ChainSafe/gossamer/lib/babe"
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/crypto/sr25519"
 	"github.com/ChainSafe/gossamer/lib/genesis"
+	"github.com/ChainSafe/gossamer/lib/grandpa"
 	"github.com/ChainSafe/gossamer/lib/keystore"
+	"github.com/ChainSafe/gossamer/lib/services"
 	"github.com/ChainSafe/gossamer/lib/trie"
 	"github.com/ChainSafe/gossamer/lib/utils"
 
+	log "github.com/ChainSafe/log15"
 	"github.com/stretchr/testify/require"
 )
+
+var firstEpochInfo = &types.EpochInfo{
+	Duration:   200,
+	FirstBlock: 0,
+}
 
 // TestInitNode
 func TestInitNode(t *testing.T) {
 	cfg := NewTestConfig(t)
 	require.NotNil(t, cfg)
 
-	genFile := NewTestGenesisFile(t, cfg)
+	genFile := NewTestGenesisRawFile(t, cfg)
 	require.NotNil(t, genFile)
 
 	defer utils.RemoveTestDir(t)
 
-	cfg.Init.Genesis = genFile.Name()
+	cfg.Init.GenesisRaw = genFile.Name()
 
 	err := InitNode(cfg)
 	require.Nil(t, err)
@@ -59,12 +68,12 @@ func TestNodeInitialized(t *testing.T) {
 	cfg := NewTestConfig(t)
 	require.NotNil(t, cfg)
 
-	genFile := NewTestGenesisFile(t, cfg)
+	genFile := NewTestGenesisRawFile(t, cfg)
 	require.NotNil(t, genFile)
 
 	defer utils.RemoveTestDir(t)
 
-	cfg.Init.Genesis = genFile.Name()
+	cfg.Init.GenesisRaw = genFile.Name()
 
 	expected := NodeInitialized(cfg.Global.BasePath, false)
 	require.Equal(t, expected, false)
@@ -81,25 +90,68 @@ func TestNewNode(t *testing.T) {
 	cfg := NewTestConfig(t)
 	require.NotNil(t, cfg)
 
-	genFile := NewTestGenesisFile(t, cfg)
+	genFile := NewTestGenesisRawFile(t, cfg)
 	require.NotNil(t, genFile)
 
 	defer utils.RemoveTestDir(t)
 
-	cfg.Init.Genesis = genFile.Name()
+	cfg.Init.GenesisRaw = genFile.Name()
 
 	err := InitNode(cfg)
 	require.Nil(t, err)
 
-	ks, err := keystore.LoadKeystore("alice")
+	ks := keystore.NewGlobalKeystore()
+	err = keystore.LoadKeystore("alice", ks.Gran)
 	require.Nil(t, err)
-	require.NotNil(t, ks)
 
 	// TODO: improve dot tests #687
 	cfg.Core.Authority = false
+	cfg.Core.BabeAuthority = false
+	cfg.Core.GrandpaAuthority = false
+	cfg.Core.BabeThreshold = nil
 
-	_, err = NewNode(cfg, ks)
+	node, err := NewNode(cfg, ks, nil)
 	require.Nil(t, err)
+
+	bp := node.Services.Get(&babe.Service{})
+	require.Nil(t, bp)
+	fg := node.Services.Get(&grandpa.Service{})
+	require.NotNil(t, fg)
+}
+
+func TestNewNode_Authority(t *testing.T) {
+	cfg := NewTestConfig(t)
+	require.NotNil(t, cfg)
+
+	genFile := NewTestGenesisRawFile(t, cfg)
+	require.NotNil(t, genFile)
+
+	defer utils.RemoveTestDir(t)
+
+	cfg.Init.GenesisRaw = genFile.Name()
+
+	err := InitNode(cfg)
+	require.Nil(t, err)
+
+	ks := keystore.NewGlobalKeystore()
+	err = keystore.LoadKeystore("alice", ks.Gran)
+	require.Nil(t, err)
+	require.Equal(t, 1, ks.Gran.Size())
+	err = keystore.LoadKeystore("alice", ks.Babe)
+	require.Nil(t, err)
+	require.Equal(t, 1, ks.Babe.Size())
+
+	// TODO: improve dot tests #687
+	cfg.Core.Authority = true
+	cfg.Core.BabeThreshold = nil
+
+	node, err := NewNode(cfg, ks, nil)
+	require.Nil(t, err)
+
+	bp := node.Services.Get(&babe.Service{})
+	require.NotNil(t, bp)
+	fg := node.Services.Get(&grandpa.Service{})
+	require.NotNil(t, fg)
 }
 
 // TestStartNode
@@ -107,24 +159,27 @@ func TestStartNode(t *testing.T) {
 	cfg := NewTestConfig(t)
 	require.NotNil(t, cfg)
 
-	genFile := NewTestGenesisFile(t, cfg)
+	genFile := NewTestGenesisRawFile(t, cfg)
 	require.NotNil(t, genFile)
 
 	defer utils.RemoveTestDir(t)
 
-	cfg.Init.Genesis = genFile.Name()
+	cfg.Init.GenesisRaw = genFile.Name()
 
 	err := InitNode(cfg)
 	require.Nil(t, err)
 
-	ks, err := keystore.LoadKeystore("alice")
+	ks := keystore.NewGlobalKeystore()
+	err = keystore.LoadKeystore("alice", ks.Gran)
 	require.Nil(t, err)
-	require.NotNil(t, ks)
 
 	// TODO: improve dot tests #687
 	cfg.Core.Authority = false
+	cfg.Core.BabeAuthority = false
+	cfg.Core.GrandpaAuthority = false
+	cfg.Core.BabeThreshold = nil
 
-	node, err := NewNode(cfg, ks)
+	node, err := NewNode(cfg, ks, nil)
 	require.Nil(t, err)
 
 	go func() {
@@ -133,10 +188,7 @@ func TestStartNode(t *testing.T) {
 	}()
 
 	time.Sleep(100 * time.Millisecond)
-	require.Equal(t, uint32(1), atomic.LoadUint32(&node.started))
-
 	node.Stop()
-	require.Equal(t, uint32(0), atomic.LoadUint32(&node.started))
 }
 
 // TestStopNode
@@ -153,12 +205,12 @@ func TestInitNode_LoadGenesisData(t *testing.T) {
 
 	defer utils.RemoveTestDir(t)
 
-	cfg.Init.Genesis = genPath
+	cfg.Init.GenesisRaw = genPath
 
 	err := InitNode(cfg)
 	require.Nil(t, err)
 
-	stateSrvc := state.NewService(cfg.Global.BasePath)
+	stateSrvc := state.NewService(cfg.Global.BasePath, log.LvlTrace)
 
 	header := &types.Header{
 		Number:         big.NewInt(0),
@@ -166,10 +218,10 @@ func TestInitNode_LoadGenesisData(t *testing.T) {
 		ExtrinsicsRoot: trie.EmptyHash,
 	}
 
-	gen, err := genesis.NewGenesisFromJSON(genPath)
+	gen, err := genesis.NewGenesisFromJSONRaw(genPath)
 	require.Nil(t, err)
 
-	err = stateSrvc.Initialize(gen.GenesisData(), header, trie.NewEmptyTrie())
+	err = stateSrvc.Initialize(gen.GenesisData(), header, trie.NewEmptyTrie(), firstEpochInfo)
 	require.Nil(t, err)
 
 	err = stateSrvc.Start()
@@ -223,9 +275,12 @@ func TestInitNode_LoadStorageRoot(t *testing.T) {
 	defer utils.RemoveTestDir(t)
 
 	cfg.Core.Authority = false
-	cfg.Init.Genesis = genPath
+	cfg.Core.BabeAuthority = false
+	cfg.Core.GrandpaAuthority = false
+	cfg.Core.BabeThreshold = nil
+	cfg.Init.GenesisRaw = genPath
 
-	gen, err := genesis.NewGenesisFromJSON(genPath)
+	gen, err := genesis.NewGenesisFromJSONRaw(genPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,10 +288,10 @@ func TestInitNode_LoadStorageRoot(t *testing.T) {
 	err = InitNode(cfg)
 	require.Nil(t, err)
 
-	ks := keystore.NewKeystore()
-	require.NotNil(t, ks)
-
-	node, err := NewNode(cfg, ks)
+	ks := keystore.NewGlobalKeystore()
+	ed25519Keyring, _ := keystore.NewEd25519Keyring()
+	ks.Gran.Insert(ed25519Keyring.Alice())
+	node, err := NewNode(cfg, ks, nil)
 	require.Nil(t, err)
 
 	if reflect.TypeOf(node) != reflect.TypeOf(&Node{}) {
@@ -281,15 +336,19 @@ func TestInitNode_LoadBalances(t *testing.T) {
 	defer utils.RemoveTestDir(t)
 
 	cfg.Core.Authority = false
-	cfg.Init.Genesis = genPath
+	cfg.Core.BabeAuthority = false
+	cfg.Core.GrandpaAuthority = false
+	cfg.Core.BabeThreshold = nil
+	cfg.Init.GenesisRaw = genPath
 
 	err := InitNode(cfg)
 	require.Nil(t, err)
 
-	ks := keystore.NewKeystore()
-	require.NotNil(t, ks)
+	ks := keystore.NewGlobalKeystore()
+	ed25519Keyring, _ := keystore.NewEd25519Keyring()
+	ks.Gran.Insert(ed25519Keyring.Alice())
 
-	node, err := NewNode(cfg, ks)
+	node, err := NewNode(cfg, ks, nil)
 	require.Nil(t, err)
 
 	if reflect.TypeOf(node) != reflect.TypeOf(&Node{}) {
@@ -310,9 +369,9 @@ func TestInitNode_LoadBalances(t *testing.T) {
 	}
 
 	kr, _ := keystore.NewSr25519Keyring()
-	alice := kr.Alice.Public().(*sr25519.PublicKey).AsBytes()
+	alice := kr.Alice().Public().(*sr25519.PublicKey).AsBytes()
 
-	bal, err := stateSrv.Storage.GetBalance(alice)
+	bal, err := stateSrv.Storage.GetBalance(nil, alice)
 	require.NoError(t, err)
 
 	genbal := "0x0000000000000001"
@@ -320,4 +379,21 @@ func TestInitNode_LoadBalances(t *testing.T) {
 	expected := binary.LittleEndian.Uint64(balbytes)
 
 	require.Equal(t, expected, bal)
+}
+
+func TestNode_StopFunc(t *testing.T) {
+	testvar := "before"
+	stopFunc := func() {
+		testvar = "after"
+	}
+
+	node := &Node{
+		Services: &services.ServiceRegistry{},
+		StopFunc: stopFunc,
+		wg:       sync.WaitGroup{},
+	}
+	node.wg.Add(1)
+
+	node.Stop()
+	require.Equal(t, testvar, "after")
 }

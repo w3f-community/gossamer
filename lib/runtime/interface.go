@@ -23,14 +23,20 @@ import (
 
 // Storage interface
 type Storage interface {
-	SetStorage(key []byte, value []byte) error
-	GetStorage(key []byte) ([]byte, error)
-	StorageRoot() (common.Hash, error)
-	SetStorageChild(keyToChild []byte, child *trie.Trie) error
-	SetStorageIntoChild(keyToChild, key, value []byte) error
-	GetStorageFromChild(keyToChild, key []byte) ([]byte, error)
-	ClearStorage(key []byte) error
+	Set(key []byte, value []byte) error
+	Get(key []byte) ([]byte, error)
+	Root() (common.Hash, error)
+	SetChild(keyToChild []byte, child *trie.Trie) error
+	SetChildStorage(keyToChild, key, value []byte) error
+	GetChildStorage(keyToChild, key []byte) ([]byte, error)
+	Delete(key []byte) error
 	Entries() map[string][]byte
 	SetBalance(key [32]byte, balance uint64) error
 	GetBalance(key [32]byte) (uint64, error)
+}
+
+// BasicStorage interface for functions used by runtime offchain workers
+type BasicStorage interface {
+	Put(key []byte, value []byte) error
+	Get(key []byte) ([]byte, error)
 }

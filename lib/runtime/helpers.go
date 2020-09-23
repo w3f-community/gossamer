@@ -22,6 +22,9 @@ var ErrInvalidTransaction = &json2.Error{Code: 1010, Message: "Invalid Transacti
 //  value of [1, 1, x]
 var ErrUnknownTransaction = &json2.Error{Code: 1011, Message: "Unknown Transaction Validity"}
 
+// ErrNilStorage is returned when the runtime context storage isn't set
+var ErrNilStorage = errors.New("runtime context storage is nil")
+
 // ValidateTransaction runs the extrinsic through runtime function TaggedTransactionQueue_validate_transaction and returns *Validity
 func (r *Runtime) ValidateTransaction(e types.Extrinsic) (*transaction.Validity, error) {
 	ret, err := r.Exec(TaggedTransactionQueueValidateTransaction, e)
@@ -58,6 +61,11 @@ func determineError(res []byte) error {
 	return ErrCannotValidateTx
 }
 
+// SetContext sets the runtime's storage. It should be set before calls to the below functions.
+func (r *Runtime) SetContext(s Storage) {
+	r.ctx.storage = s
+}
+
 // BabeConfiguration gets the configuration data for BABE from the runtime
 func (r *Runtime) BabeConfiguration() (*types.BabeConfiguration, error) {
 	data, err := r.Exec(BabeAPIConfiguration, []byte{})
@@ -75,38 +83,18 @@ func (r *Runtime) BabeConfiguration() (*types.BabeConfiguration, error) {
 }
 
 // GrandpaAuthorities returns the genesis authorities from the runtime
-// TODO: this seems to be out-of-date, the call is now named Grandpa_authorities and takes a block number.
-func (r *Runtime) GrandpaAuthorities() ([]*types.AuthorityData, error) {
+func (r *Runtime) GrandpaAuthorities() ([]*types.Authority, error) {
 	ret, err := r.Exec(GrandpaAuthorities, []byte{})
 	if err != nil {
 		return nil, err
 	}
 
-	decodedKeys, err := scale.Decode(ret, [][32]byte{})
+	adr, err := scale.Decode(ret, []*types.GrandpaAuthorityDataRaw{})
 	if err != nil {
 		return nil, err
 	}
 
-	keys := decodedKeys.([][32]byte)
-	authsRaw := make([]*types.AuthorityDataRaw, len(keys))
-
-	for i, key := range keys {
-		authsRaw[i] = &types.AuthorityDataRaw{
-			ID:     key,
-			Weight: 1,
-		}
-	}
-
-	auths := make([]*types.AuthorityData, len(keys))
-	for i, auth := range authsRaw {
-		auths[i] = new(types.AuthorityData)
-		err = auths[i].FromRaw(auth)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return auths, err
+	return types.GrandpaAuthorityDataRawToAuthorityData(adr.([]*types.GrandpaAuthorityDataRaw))
 }
 
 // InitializeBlock calls runtime API function Core_initialize_block

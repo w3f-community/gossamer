@@ -17,18 +17,16 @@
 package dot
 
 import (
-	"errors"
 	"fmt"
-	"math/big"
 	"os"
 	"os/signal"
 	"path"
 	"sync"
-	"sync/atomic"
 	"syscall"
 
 	"github.com/ChainSafe/gossamer/dot/network"
 	"github.com/ChainSafe/gossamer/dot/state"
+	"github.com/ChainSafe/gossamer/dot/types"
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/genesis"
 	"github.com/ChainSafe/gossamer/lib/keystore"
@@ -38,46 +36,81 @@ import (
 	log "github.com/ChainSafe/log15"
 )
 
+var logger = log.New("pkg", "dot")
+
 // Node is a container for all the components of a node.
 type Node struct {
 	Name     string
 	Services *services.ServiceRegistry // registry of all node services
-	syncChan chan *big.Int
+	StopFunc func()                    // func to call when node stops, currently used for profiling
 	wg       sync.WaitGroup
-	started  uint32
 }
 
 // InitNode initializes a new dot node from the provided dot node configuration
 // and JSON formatted genesis file.
 func InitNode(cfg *Config) error {
-	log.Info(
-		"[dot] initializing node...",
+	err := setupLogger(cfg)
+	if err != nil {
+		return err
+	}
+
+	logger.Info(
+		"initializing node...",
 		"name", cfg.Global.Name,
 		"id", cfg.Global.ID,
 		"basepath", cfg.Global.BasePath,
-		"genesis", cfg.Init.Genesis,
+		"genesis-raw", cfg.Init.GenesisRaw,
 	)
 
 	// create genesis from configuration file
-	gen, err := genesis.NewGenesisFromJSON(cfg.Init.Genesis)
+	gen, err := genesis.NewGenesisFromJSONRaw(cfg.Init.GenesisRaw)
 	if err != nil {
-		return fmt.Errorf("failed to load genesis from file: %s", err)
+		return fmt.Errorf("failed to load genesis from file: %w", err)
 	}
 
 	// create trie from genesis
 	t, err := genesis.NewTrieFromGenesis(gen)
 	if err != nil {
-		return fmt.Errorf("failed to create trie from genesis: %s", err)
+		return fmt.Errorf("failed to create trie from genesis: %w", err)
 	}
 
 	// create genesis block from trie
 	header, err := genesis.NewGenesisBlockFromTrie(t)
 	if err != nil {
-		return fmt.Errorf("failed to create genesis block from trie: %s", err)
+		return fmt.Errorf("failed to create genesis block from trie: %w", err)
 	}
 
 	// create new state service
-	stateSrvc := state.NewService(cfg.Global.BasePath)
+	stateSrvc := state.NewService(cfg.Global.BasePath, cfg.Global.lvl)
+
+	var genEpochInfo *types.EpochInfo
+	if !cfg.Init.TestFirstEpoch {
+		// load genesis trie state for loading runtime info
+		genTrie := state.NewTrieState(t) //nolint
+
+		// create genesis runtime
+		r, err := genesis.NewRuntimeFromGenesis(gen, genTrie) //nolint
+		if err != nil {
+			return fmt.Errorf("failed to create genesis runtime: %w", err)
+		}
+
+		babeCfg, err := r.BabeConfiguration()
+		if err != nil {
+			return fmt.Errorf("failed to fetch genesis babe configuration: %w", err)
+		}
+
+		genEpochInfo = &types.EpochInfo{
+			Duration:   babeCfg.EpochLength,
+			FirstBlock: 1,
+			Randomness: babeCfg.Randomness,
+		}
+
+		r.Stop()
+	} else {
+		genEpochInfo = &types.EpochInfo{
+			Duration: 200,
+		}
+	}
 
 	// declare genesis data
 	data := gen.GenesisData()
@@ -92,17 +125,17 @@ func InitNode(cfg *Config) error {
 	data.ProtocolID = cfg.Network.ProtocolID
 
 	// initialize state service with genesis data, block, and trie
-	err = stateSrvc.Initialize(data, header, t)
+	err = stateSrvc.Initialize(data, header, t, genEpochInfo)
 	if err != nil {
 		return fmt.Errorf("failed to initialize state service: %s", err)
 	}
 
-	log.Info(
-		"[dot] node initialized",
+	logger.Info(
+		"node initialized",
 		"name", cfg.Global.Name,
 		"id", cfg.Global.ID,
 		"basepath", cfg.Global.BasePath,
-		"genesis", cfg.Init.Genesis,
+		"genesis-raw", cfg.Init.GenesisRaw,
 		"block", header.Number,
 	)
 
@@ -112,14 +145,13 @@ func InitNode(cfg *Config) error {
 // NodeInitialized returns true if, within the configured data directory for the
 // node, the state database has been created and the genesis data has been loaded
 func NodeInitialized(basepath string, expected bool) bool {
-
 	// check if key registry exists
 	registry := path.Join(basepath, "KEYREGISTRY")
 	_, err := os.Stat(registry)
 	if os.IsNotExist(err) {
 		if expected {
-			log.Warn(
-				"[dot] node has not been initialized",
+			logger.Warn(
+				"node has not been initialized",
 				"basepath", basepath,
 				"error", "failed to locate KEYREGISTRY file in data directory",
 			)
@@ -132,8 +164,8 @@ func NodeInitialized(basepath string, expected bool) bool {
 	_, err = os.Stat(manifest)
 	if os.IsNotExist(err) {
 		if expected {
-			log.Warn(
-				"[dot] node has not been initialized",
+			logger.Warn(
+				"node has not been initialized",
 				"basepath", basepath,
 				"error", "failed to locate MANIFEST file in data directory",
 			)
@@ -144,8 +176,8 @@ func NodeInitialized(basepath string, expected bool) bool {
 	// initialize database using data directory
 	db, err := database.NewBadgerDB(basepath)
 	if err != nil {
-		log.Error(
-			"[dot] failed to create database",
+		logger.Error(
+			"failed to create database",
 			"basepath", basepath,
 			"error", err,
 		)
@@ -155,8 +187,8 @@ func NodeInitialized(basepath string, expected bool) bool {
 	// load genesis data from initialized node database
 	_, err = state.LoadGenesisData(db)
 	if err != nil {
-		log.Warn(
-			"[dot] node has not been initialized",
+		logger.Warn(
+			"node has not been initialized",
 			"basepath", basepath,
 			"error", err,
 		)
@@ -166,35 +198,34 @@ func NodeInitialized(basepath string, expected bool) bool {
 	// close database
 	err = db.Close()
 	if err != nil {
-		log.Error("[dot] failed to close database", "error", err)
+		logger.Error("failed to close database", "error", err)
 	}
 
 	return true
 }
 
 // NewNode creates a new dot node from a dot node configuration
-func NewNode(cfg *Config, ks *keystore.Keystore) (*Node, error) {
+func NewNode(cfg *Config, ks *keystore.GlobalKeystore, stopFunc func()) (*Node, error) {
+	err := setupLogger(cfg)
+	if err != nil {
+		return nil, err
+	}
 
 	// if authority node, should have at least 1 key in keystore
-	if cfg.Core.Authority && ks.NumSr25519Keys() == 0 {
-		return nil, fmt.Errorf("no keys provided for authority node")
+	if cfg.Core.Authority && (ks.Babe.Size() == 0 || ks.Gran.Size() == 0) {
+		return nil, ErrNoKeysProvided
 	}
 
 	// Node Services
 
-	log.Info(
-		"[dot] initializing node services...",
+	logger.Info(
+		"initializing node services...",
 		"name", cfg.Global.Name,
 		"id", cfg.Global.ID,
 		"basepath", cfg.Global.BasePath,
 	)
 
 	var nodeSrvcs []services.Service
-
-	// Message Channels (send and receive messages between services)
-
-	coreMsgs := make(chan network.Message, 128)    // message channel from core service to network service
-	networkMsgs := make(chan network.Message, 128) // message channel from network service to core service
 
 	// State Service
 
@@ -203,40 +234,74 @@ func NewNode(cfg *Config, ks *keystore.Keystore) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create state service: %s", err)
 	}
-	nodeSrvcs = append(nodeSrvcs, stateSrvc)
+
+	// create runtime
+	rt, err := createRuntime(cfg, stateSrvc, ks.Acco.(*keystore.GenericKeystore))
+	if err != nil {
+		return nil, err
+	}
+
+	ver, err := createBlockVerifier(cfg, stateSrvc, rt)
+	if err != nil {
+		return nil, err
+	}
+
+	var bp BlockProducer
+
+	if cfg.Core.BabeAuthority {
+		// create BABE service
+		bp, err = createBABEService(cfg, rt, stateSrvc, ks.Babe)
+		if err != nil {
+			return nil, err
+		}
+
+		nodeSrvcs = append(nodeSrvcs, bp)
+	}
+
+	dh, err := createDigestHandler(stateSrvc, bp, ver)
+	if err != nil {
+		return nil, err
+	}
+
+	// create GRANDPA service
+	fg, err := createGRANDPAService(cfg, rt, stateSrvc, dh, ks.Gran)
+	if err != nil {
+		return nil, err
+	}
+	nodeSrvcs = append(nodeSrvcs, fg)
+	dh.SetFinalityGadget(fg)
 
 	// Syncer
-	syncChan := make(chan *big.Int, 128)
-
-	// Core Service
-
-	// create core service and append core service to node services
-	coreSrvc, rt, err := createCoreService(cfg, ks, stateSrvc, coreMsgs, networkMsgs, syncChan)
+	syncer, err := createSyncService(cfg, stateSrvc, bp, dh, ver, rt)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create core service: %s", err)
+		return nil, err
 	}
-	nodeSrvcs = append(nodeSrvcs, coreSrvc)
 
 	// Network Service
-
-	networkSrvc := &network.Service{} // TODO: rpc service without network service
+	var networkSrvc *network.Service
 
 	// check if network service is enabled
-	if enabled := NetworkServiceEnabled(cfg); enabled {
-
+	if enabled := networkServiceEnabled(cfg); enabled {
 		// create network service and append network service to node services
-		networkSrvc, err = createNetworkService(cfg, stateSrvc, coreMsgs, networkMsgs, syncChan)
+		networkSrvc, err = createNetworkService(cfg, stateSrvc, syncer)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create network service: %s", err)
 		}
 		nodeSrvcs = append(nodeSrvcs, networkSrvc)
-
 	} else {
-
 		// do not create or append network service if network service is not enabled
-		log.Debug("[dot] network service disabled", "network", enabled, "roles", cfg.Core.Roles)
-
+		logger.Debug("network service disabled", "network", enabled, "roles", cfg.Core.Roles)
 	}
+
+	// Core Service
+
+	// create core service and append core service to node services
+	coreSrvc, err := createCoreService(cfg, bp, fg, ver, rt, ks, stateSrvc, networkSrvc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create core service: %s", err)
+	}
+	networkSrvc.SetMessageHandler(coreSrvc)
+	nodeSrvcs = append(nodeSrvcs, coreSrvc)
 
 	// System Service
 
@@ -250,20 +315,26 @@ func NewNode(cfg *Config, ks *keystore.Keystore) (*Node, error) {
 	if enabled := RPCServiceEnabled(cfg); enabled {
 
 		// create rpc service and append rpc service to node services
-		rpcSrvc := createRPCService(cfg, stateSrvc, coreSrvc, networkSrvc, rt, sysSrvc)
+		rpcSrvc, err := createRPCService(cfg, stateSrvc, coreSrvc, networkSrvc, bp, rt, sysSrvc)
+		if err != nil {
+			return nil, err
+		}
 		nodeSrvcs = append(nodeSrvcs, rpcSrvc)
 
 	} else {
 
 		// do not create or append rpc service if rpc service is not enabled
-		log.Debug("[dot] rpc service disabled by default", "rpc", enabled)
+		logger.Debug("rpc service disabled by default", "rpc", enabled)
 
 	}
 
+	// close state service last
+	nodeSrvcs = append(nodeSrvcs, stateSrvc)
+
 	node := &Node{
 		Name:     cfg.Global.Name,
+		StopFunc: stopFunc,
 		Services: services.NewServiceRegistry(),
-		syncChan: syncChan,
 	}
 
 	for _, srvc := range nodeSrvcs {
@@ -275,7 +346,7 @@ func NewNode(cfg *Config, ks *keystore.Keystore) (*Node, error) {
 
 // Start starts all dot node services
 func (n *Node) Start() error {
-	log.Info("[dot] starting node services...")
+	logger.Info("starting node services...")
 
 	// start all dot node services
 	n.Services.StartAll()
@@ -285,14 +356,10 @@ func (n *Node) Start() error {
 		signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(sigc)
 		<-sigc
-		log.Info("[dot] signal interrupt, shutting down...")
+		logger.Info("signal interrupt, shutting down...")
 		n.Stop()
 		os.Exit(130)
 	}()
-
-	if ok := atomic.CompareAndSwapUint32(&n.started, 0, 1); !ok {
-		return errors.New("failed to change Node status from stopped to started")
-	}
 
 	n.wg.Add(1)
 	n.wg.Wait()
@@ -302,15 +369,11 @@ func (n *Node) Start() error {
 
 // Stop stops all dot node services
 func (n *Node) Stop() {
+	if n.StopFunc != nil {
+		n.StopFunc()
+	}
 
 	// stop all node services
 	n.Services.StopAll()
-
-	defer func() {
-		if ok := atomic.CompareAndSwapUint32(&n.started, 1, 0); !ok {
-			log.Error("failed to change Node status from started to stopped")
-		}
-
-		n.wg.Done()
-	}()
+	n.wg.Done()
 }

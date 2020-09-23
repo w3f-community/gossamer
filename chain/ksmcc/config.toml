@@ -2,9 +2,19 @@
 name = "ksmcc"
 id = "ksmcc"
 basepath = "~/.gossamer/ksmcc"
+log = "info"
+
+[log]
+core = ""
+network = ""
+rpc = ""
+state = ""
+runtime = ""
+babe = ""
+grandpa = ""
 
 [init]
-genesis = "./chain/ksmcc/genesis.json"
+genesis-raw = "./chain/ksmcc/genesis-raw.json"
 
 [account]
 key = ""
@@ -13,6 +23,9 @@ unlock = ""
 [core]
 authority = false
 roles = 1
+babe-authority = false
+grandpa-authority = false
+babe-threshold = ""
 
 [network]
 port = 7001

@@ -17,258 +17,262 @@
 package stress
 
 import (
-	"bytes"
-	"encoding/hex"
-	"errors"
 	"fmt"
-	"io/ioutil"
+	"math/big"
 	"math/rand"
 	"os"
 	"strconv"
 	"testing"
 	"time"
 
-	"github.com/ChainSafe/gossamer/dot/rpc/modules"
-	"github.com/ChainSafe/gossamer/dot/types"
-	"github.com/ChainSafe/gossamer/lib/common"
-	"github.com/ChainSafe/gossamer/lib/common/optional"
-	"github.com/ChainSafe/gossamer/lib/runtime/extrinsic"
-	"github.com/ChainSafe/gossamer/lib/trie"
 	"github.com/ChainSafe/gossamer/tests/utils"
 
 	log "github.com/ChainSafe/log15"
-	scribble "github.com/nanobox-io/golang-scribble"
 	"github.com/stretchr/testify/require"
 )
 
-var (
-	numNodes   = 3
-	maxRetries = 8
-)
-
-// compareChainHeads calls getChainHead for each node in the array
-// it returns a map of chainHead hashes to node key names, and an error if the hashes don't all match
-func compareChainHeads(t *testing.T, nodes []*utils.Node) (map[common.Hash][]string, error) {
-	hashes := make(map[common.Hash][]string)
-	for _, node := range nodes {
-		header := utils.GetChainHead(t, node)
-		log.Info("getting header from node", "header", header, "hash", header.Hash(), "node", node.Key)
-		hashes[header.Hash()] = append(hashes[header.Hash()], node.Key)
-	}
-
-	var err error
-	if len(hashes) != 1 {
-		err = errors.New("node chain head hashes don't match")
-	}
-
-	return hashes, err
-}
-
 func TestMain(m *testing.M) {
-	if utils.GOSSAMER_INTEGRATION_TEST_MODE != "stress" {
-		_, _ = fmt.Fprintln(os.Stdout, "Going to skip stress test")
+	if utils.MODE != "stress" {
+		_, _ = fmt.Fprintln(os.Stdout, "Skipping stress test")
 		return
 	}
-
-	_, _ = fmt.Fprintln(os.Stdout, "Going to start stress test")
 
 	if utils.NETWORK_SIZE != "" {
 		var err error
 		numNodes, err = strconv.Atoi(utils.NETWORK_SIZE)
 		if err == nil {
-			_, _ = fmt.Fprintf(os.Stdout, "Going to use custom network size %d\n", numNodes)
+			_, _ = fmt.Fprintf(os.Stdout, "using custom network size %d\n", numNodes)
 		}
 	}
 
 	if utils.HOSTNAME == "" {
-		_, _ = fmt.Fprintln(os.Stdout, "HOSTNAME is not set, skipping stress test")
-		return
+		utils.HOSTNAME = "localhost"
 	}
+
+	// TODO: implement test log flag
+	utils.SetLogLevel(log.LvlInfo)
+	h := log.StreamHandler(os.Stdout, log.TerminalFormat())
+	logger.SetHandler(log.LvlFilterHandler(log.LvlInfo, h))
 
 	// Start all tests
 	code := m.Run()
 	os.Exit(code)
 }
 
-func getPendingExtrinsics(t *testing.T, node *utils.Node) [][]byte {
-	respBody, err := utils.PostRPC(t, utils.AuthorSubmitExtrinsic, utils.NewEndpoint(node.RPCPort), "[]")
+func TestRestartNode(t *testing.T) {
+	numNodes = 1
+	nodes, err := utils.InitNodes(numNodes, utils.ConfigDefault)
 	require.NoError(t, err)
 
-	exts := new(modules.PendingExtrinsicsResponse)
-	err = utils.DecodeRPC(t, respBody, exts)
+	err = utils.StartNodes(t, nodes)
 	require.NoError(t, err)
-
-	return *exts
-}
-
-// compareChainHeadsWithRetry calls compareChainHeads, retrying up to maxRetries times if it errors.
-func compareChainHeadsWithRetry(t *testing.T, nodes []*utils.Node) {
-	var hashes map[common.Hash][]string
-	var err error
-
-	for i := 0; i < maxRetries; i++ {
-		hashes, err = compareChainHeads(t, nodes)
-		if err == nil {
-			break
-		}
-
-		time.Sleep(time.Second)
-	}
-	require.NoError(t, err, hashes)
-}
-
-func TestStressSync(t *testing.T) {
-	nodes, err := utils.StartNodes(t, numNodes)
-	require.NoError(t, err)
-
-	tempDir, err := ioutil.TempDir("", "gossamer-stress-db")
-	require.NoError(t, err)
-
-	db, err := scribble.New(tempDir, nil)
-	require.NoError(t, err)
-
-	for _, node := range nodes {
-		header := utils.GetChainHead(t, node)
-
-		err = db.Write("blocks_"+node.Key, header.Number.String(), header)
-		require.NoError(t, err)
-	}
 
 	errList := utils.TearDown(t, nodes)
 	require.Len(t, errList, 0)
-}
 
-// submitExtrinsicAssertInclusion submits an extrinsic to a random node and asserts that the extrinsic was included in some block
-// and that the nodes remain synced
-func submitExtrinsicAssertInclusion(t *testing.T, nodes []*utils.Node, ext extrinsic.Extrinsic) {
-	tx, err := ext.Encode()
+	err = utils.StartNodes(t, nodes)
 	require.NoError(t, err)
 
-	txStr := hex.EncodeToString(tx)
-	log.Info("submitting transaction", "tx", txStr)
-
-	// send extrinsic to random node
-	idx := rand.Intn(len(nodes))
-	prevHeader := utils.GetChainHead(t, nodes[idx]) // get starting header so that we can lookup blocks by number later
-	respBody, err := utils.PostRPC(t, utils.AuthorSubmitExtrinsic, utils.NewEndpoint(nodes[idx].RPCPort), "\"0x"+txStr+"\"")
-	require.NoError(t, err)
-
-	var hash modules.ExtrinsicHashResponse
-	err = utils.DecodeRPC(t, respBody, &hash)
-	require.Nil(t, err)
-	log.Info("submitted transaction", "hash", hash, "node", nodes[idx].Key)
-	t.Logf("submitted transaction to node %s", nodes[idx].Key)
-
-	// wait for nodes to build block + sync, then get headers
-	time.Sleep(time.Second * 10)
-
-	for i := 0; i < maxRetries; i++ {
-		exts := getPendingExtrinsics(t, nodes[idx])
-		if len(exts) == 0 {
-			break
-		}
-
-		time.Sleep(time.Second)
-	}
-
-	header := utils.GetChainHead(t, nodes[idx])
-	log.Info("got header from node", "header", header, "hash", header.Hash(), "node", nodes[idx].Key)
-
-	// search from child -> parent blocks for extrinsic
-	var resExts []types.Extrinsic
-	i := 0
-	for header.ExtrinsicsRoot == trie.EmptyHash && i != maxRetries {
-		// check all nodes, since it might have been included on any of the block producers
-		var block *types.Block
-
-		for j := 0; j < len(nodes); j++ {
-			block = utils.GetBlock(t, nodes[j], header.ParentHash)
-			if block == nil {
-				// couldn't get block, increment retry counter
-				i++
-				continue
-			}
-
-			header = block.Header
-			log.Info("got block from node", "hash", header.Hash(), "node", nodes[j].Key)
-			log.Debug("got block from node", "header", header, "body", block.Body, "hash", header.Hash(), "node", nodes[j].Key)
-
-			if block.Body != nil && !bytes.Equal(*(block.Body), []byte{0}) {
-				resExts, err = block.Body.AsExtrinsics()
-				require.NoError(t, err, block.Body)
-				break
-			}
-
-			if header.Hash() == prevHeader.Hash() && j == len(nodes)-1 {
-				t.Fatal("could not find extrinsic in any blocks")
-			}
-		}
-
-		if block != nil && block.Body != nil && !bytes.Equal(*(block.Body), []byte{0}) {
-			break
-		}
-	}
-
-	// assert that the extrinsic included is the one we submitted
-	require.Equal(t, 1, len(resExts), "did not find extrinsic in block on any node")
-	require.Equal(t, resExts[0], types.Extrinsic(tx))
-}
-
-func TestStress_IncludeData(t *testing.T) {
-	t.Skip()
-
-	nodes, err := utils.StartNodes(t, numNodes)
-	require.NoError(t, err)
-
-	time.Sleep(5 * time.Second)
-
-	// create IncludeData extrnsic
-	ext := extrinsic.NewIncludeDataExt([]byte("nootwashere"))
-	submitExtrinsicAssertInclusion(t, nodes, ext)
-
-	compareChainHeadsWithRetry(t, nodes)
-
-	errList := utils.TearDown(t, nodes)
+	errList = utils.TearDown(t, nodes)
 	require.Len(t, errList, 0)
 }
 
-func TestStress_StorageChange(t *testing.T) {
-	t.Skip()
-
-	nodes, err := utils.StartNodes(t, numNodes)
+func TestSync_Basic(t *testing.T) {
+	nodes, err := utils.InitializeAndStartNodes(t, numNodes, utils.GenesisDefault, utils.ConfigDefault)
 	require.NoError(t, err)
 
 	defer func() {
-		//TODO: #803 cleanup optimization
 		errList := utils.TearDown(t, nodes)
 		require.Len(t, errList, 0)
 	}()
 
-	time.Sleep(5 * time.Second)
+	err = compareChainHeadsWithRetry(t, nodes)
+	require.NoError(t, err)
+}
 
-	// create IncludeData extrnsic
-	key := []byte("noot")
-	value := []byte("washere")
-	ext := extrinsic.NewStorageChangeExt(key, optional.NewBytes(true, value))
-	submitExtrinsicAssertInclusion(t, nodes, ext)
+func TestSync_SingleBlockProducer(t *testing.T) {
+	numNodes = 6 // TODO: increase this when syncing improves
+	utils.SetLogLevel(log.LvlInfo)
 
-	time.Sleep(10 * time.Second)
+	// start block producing node first
+	node, err := utils.RunGossamer(t, numNodes-1, utils.TestDir(t, "ferdie"), utils.GenesisSixAuths, utils.ConfigBABEMaxThreshold)
+	require.NoError(t, err)
 
-	// for each node, check that storage was updated accordingly
-	errs := []error{}
-	for _, node := range nodes {
-		log.Info("getting storage from node", "node", node.Key)
-		res := utils.GetStorage(t, node, key)
+	// wait and start rest of nodes - if they all start at the same time the first round usually doesn't complete since
+	// all nodes vote for different blocks.
+	time.Sleep(time.Second * 5)
+	nodes, err := utils.InitializeAndStartNodes(t, numNodes-1, utils.GenesisSixAuths, utils.ConfigNoBABE)
+	require.NoError(t, err)
+	nodes = append(nodes, node)
 
-		// TODO: why does finalize_block modify the storage value?
-		if bytes.Equal(res, []byte{}) {
-			t.Logf("could not get storage value from node %s", node.Key)
-			errs = append(errs, fmt.Errorf("could not get storage value from node %s\n", node.Key)) //nolint
-		} else {
-			t.Logf("got storage value from node %s: %v", node.Key, res)
+	defer func() {
+		errList := utils.TearDown(t, nodes)
+		require.Len(t, errList, 0)
+	}()
+
+	numCmps := 10
+	for i := 0; i < numCmps; i++ {
+		t.Log("comparing...", i)
+		err = compareBlocksByNumberWithRetry(t, nodes, strconv.Itoa(i))
+		require.NoError(t, err, i)
+		time.Sleep(time.Second)
+	}
+}
+
+func TestSync_SingleSyncingNode(t *testing.T) {
+	numNodes = 2
+	utils.SetLogLevel(log.LvlInfo)
+
+	// start block producing node
+	alice, err := utils.RunGossamer(t, 0, utils.TestDir(t, "alice"), utils.GenesisDefault, utils.ConfigBABEMaxThreshold)
+	require.NoError(t, err)
+	time.Sleep(time.Second * 15)
+
+	// start syncing node
+	bob, err := utils.RunGossamer(t, 1, utils.TestDir(t, "bob"), utils.GenesisDefault, utils.ConfigNoBABE)
+	require.NoError(t, err)
+
+	nodes := []*utils.Node{alice, bob}
+	defer func() {
+		errList := utils.TearDown(t, nodes)
+		require.Len(t, errList, 0)
+	}()
+
+	numCmps := 100
+	for i := 0; i < numCmps; i++ {
+		t.Log("comparing...", i)
+		err = compareBlocksByNumberWithRetry(t, nodes, strconv.Itoa(i))
+		require.NoError(t, err, i)
+	}
+}
+
+func TestSync_ManyProducers(t *testing.T) {
+	// TODO: this fails with runtime: out of memory
+	// this means when each node is connected to 8 other nodes, too much memory is being used.
+	t.Skip()
+
+	numNodes = 9 // 9 block producers
+	utils.SetLogLevel(log.LvlInfo)
+	nodes, err := utils.InitializeAndStartNodes(t, numNodes, utils.GenesisDefault, utils.ConfigDefault)
+	require.NoError(t, err)
+
+	defer func() {
+		errList := utils.TearDown(t, nodes)
+		require.Len(t, errList, 0)
+	}()
+
+	numCmps := 100
+	for i := 0; i < numCmps; i++ {
+		t.Log("comparing...", i)
+		err = compareBlocksByNumberWithRetry(t, nodes, strconv.Itoa(i))
+		require.NoError(t, err, i)
+		time.Sleep(time.Second)
+	}
+}
+
+func TestSync_Bench(t *testing.T) {
+	numNodes = 2
+	utils.SetLogLevel(log.LvlInfo)
+	numBlocks := 256
+
+	// start block producing node
+	// node produces 10 blocks / second
+	alice, err := utils.RunGossamer(t, 0, utils.TestDir(t, "alice"), utils.GenesisDefault, utils.ConfigBABEMaxThresholdBench)
+	require.NoError(t, err)
+	time.Sleep(time.Second*time.Duration(numBlocks/10) + time.Second)
+
+	err = utils.PauseBABE(t, alice)
+	require.NoError(t, err)
+	t.Log("BABE paused")
+
+	// start syncing node
+	bob, err := utils.RunGossamer(t, 1, utils.TestDir(t, "bob"), utils.GenesisDefault, utils.ConfigNoBABE)
+	require.NoError(t, err)
+
+	nodes := []*utils.Node{alice, bob}
+	defer func() {
+		errList := utils.TearDown(t, nodes)
+		require.Len(t, errList, 0)
+	}()
+
+	// see how long it takes to sync to block 256
+	last := big.NewInt(int64(numBlocks))
+	start := time.Now()
+	var end time.Time
+
+	for {
+		head := utils.GetChainHead(t, bob)
+		if head.Number.Cmp(last) >= 0 {
+			end = time.Now()
+			break
+		}
+
+		if time.Since(start) >= testTimeout {
+			t.Fatal("did not sync")
 		}
 	}
 
-	require.Equal(t, 0, len(errs), errs)
-	compareChainHeadsWithRetry(t, nodes)
+	maxTime := time.Second * 15
+	minBPS := float64(17)
+	totalTime := end.Sub(start)
+	bps := float64(numBlocks) / end.Sub(start).Seconds()
+	t.Log("total sync time:", totalTime)
+	t.Log("blocks per second:", bps)
+	require.LessOrEqual(t, int64(totalTime), int64(maxTime))
+	require.GreaterOrEqual(t, bps, minBPS)
+
+	// assert block is correct
+	t.Log("comparing block...", numBlocks)
+	err = compareBlocksByNumberWithRetry(t, nodes, strconv.Itoa(numBlocks))
+	require.NoError(t, err, numBlocks)
+}
+
+func TestSync_Restart(t *testing.T) {
+	numNodes = 3
+	utils.SetLogLevel(log.LvlInfo)
+
+	// start block producing node first
+	node, err := utils.RunGossamer(t, numNodes-1, utils.TestDir(t, "ferdie"), utils.GenesisDefault, utils.ConfigBABEMaxThreshold)
+	require.NoError(t, err)
+
+	// wait and start rest of nodes
+	time.Sleep(time.Second * 5)
+	nodes, err := utils.InitializeAndStartNodes(t, numNodes-1, utils.GenesisDefault, utils.ConfigNoBABE)
+	require.NoError(t, err)
+	nodes = append(nodes, node)
+
+	defer func() {
+		errList := utils.TearDown(t, nodes)
+		require.Len(t, errList, 0)
+	}()
+
+	done := make(chan struct{})
+
+	// randomly turn off and on nodes
+	go func() {
+		for {
+			select {
+			case <-time.After(time.Second * 3):
+				idx := rand.Intn(numNodes)
+
+				errList := utils.StopNodes(t, nodes[idx:idx+1])
+				require.Len(t, errList, 0)
+
+				err = utils.StartNodes(t, nodes[idx:idx+1])
+				require.NoError(t, err)
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	numCmps := 12
+	for i := 0; i < numCmps; i++ {
+		t.Log("comparing...", i)
+		err = compareBlocksByNumberWithRetry(t, nodes, strconv.Itoa(i))
+		require.NoError(t, err, i)
+		time.Sleep(time.Second)
+	}
+	close(done)
+	time.Sleep(time.Second * 3)
 }

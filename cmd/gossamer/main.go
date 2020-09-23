@@ -30,6 +30,7 @@ import (
 
 // app is the cli application
 var app = cli.NewApp()
+var logger = log.New("pkg", "cmd")
 
 var (
 	// exportCommand defines the "export" subcommand (ie, `gossamer export`)
@@ -51,8 +52,8 @@ var (
 		ArgsUsage: "",
 		Flags:     InitFlags,
 		Category:  "INIT",
-		Description: "The init command initializes the node databases and loads the genesis data from the genesis configuration file to state.\n" +
-			"\tUsage: gossamer init --genesis genesis.json",
+		Description: "The init command initializes the node databases and loads the genesis data from the raw genesis configuration file to state.\n" +
+			"\tUsage: gossamer init --genesis-raw genesis.json",
 	}
 	// accountCommand defines the "account" subcommand (ie, `gossamer account`)
 	accountCommand = cli.Command{
@@ -68,6 +69,18 @@ var (
 			"\tTo import a keystore file: gossamer account --import=path/to/file\n" +
 			"\tTo list keys: gossamer account --list",
 	}
+	// initCommand defines the "init" subcommand (ie, `gossamer init`)
+	buildSpecCommand = cli.Command{
+		Action:    FixFlagOrder(buildSpecAction),
+		Name:      "build-spec",
+		Usage:     "Generates genesis JSON data, and can convert to raw genesis data",
+		ArgsUsage: "",
+		Flags:     BuildSpecFlags,
+		Category:  "BUILD-SPEC",
+		Description: "The build-spec command outputs current genesis JSON data.\n" +
+			"\tUsage: gossamer build-spec\n" +
+			"\tTo generate raw genesis file: gossamer build-spec --raw",
+	}
 )
 
 // init initializes the cli application
@@ -82,6 +95,7 @@ func init() {
 		exportCommand,
 		initCommand,
 		accountCommand,
+		buildSpecCommand,
 	}
 	app.Flags = RootFlags
 }
@@ -98,16 +112,21 @@ func main() {
 // configuration, loads the keystore, initializes the node if not initialized,
 // then creates and starts the node and node services
 func gossamerAction(ctx *cli.Context) error {
-
 	// check for unknown command arguments
 	if arguments := ctx.Args(); len(arguments) > 0 {
 		return fmt.Errorf("failed to read command argument: %q", arguments[0])
 	}
 
-	// start gossamer logger
-	err := startLogger(ctx)
+	// begin profiling, if set
+	stopFunc, err := beginProfile(ctx)
 	if err != nil {
-		log.Error("[cmd] failed to start logger", "error", err)
+		return err
+	}
+
+	// setup gossamer logger
+	lvl, err := setupLogger(ctx)
+	if err != nil {
+		logger.Error("failed to setup logger", "error", err)
 		return err
 	}
 
@@ -115,9 +134,11 @@ func gossamerAction(ctx *cli.Context) error {
 	// cli application from the flag values provided)
 	cfg, err := createDotConfig(ctx)
 	if err != nil {
-		log.Error("[cmd] failed to create node configuration", "error", err)
+		logger.Error("failed to create node configuration", "error", err)
 		return err
 	}
+
+	cfg.Global.LogLevel = lvl.String()
 
 	// expand data directory and update node configuration (performed separately
 	// from createDotConfig because dot config should not include expanded path)
@@ -129,7 +150,7 @@ func gossamerAction(ctx *cli.Context) error {
 		// initialize node (initialize state database and load genesis data)
 		err = dot.InitNode(cfg)
 		if err != nil {
-			log.Error("[cmd] failed to initialize node", "error", err)
+			logger.Error("failed to initialize node", "error", err)
 			return err
 		}
 	}
@@ -138,29 +159,54 @@ func gossamerAction(ctx *cli.Context) error {
 	// but do not overwrite configuration if the corresponding flag value is set
 	err = updateDotConfigFromGenesisData(ctx, cfg)
 	if err != nil {
-		log.Error("[cmd] failed to update config from genesis data", "error", err)
+		logger.Error("failed to update config from genesis data", "error", err)
 		return err
 	}
 
-	ks, err := keystore.LoadKeystore(cfg.Account.Key)
+	ks := keystore.NewGlobalKeystore()
+	err = keystore.LoadKeystore(cfg.Account.Key, ks.Acco)
 	if err != nil {
-		log.Error("[cmd] failed to load keystore", "error", err)
+		logger.Error("failed to load account keystore", "error", err)
 		return err
 	}
 
-	err = unlockKeystore(ks, cfg.Global.BasePath, cfg.Account.Unlock, ctx.String(PasswordFlag.Name))
+	err = keystore.LoadKeystore(cfg.Account.Key, ks.Babe)
 	if err != nil {
-		log.Error("[cmd] failed to unlock keystore", "error", err)
+		logger.Error("failed to load BABE keystore", "error", err)
 		return err
 	}
 
-	node, err := dot.NewNode(cfg, ks)
+	err = keystore.LoadKeystore(cfg.Account.Key, ks.Gran)
 	if err != nil {
-		log.Error("[cmd] failed to create node services", "error", err)
+		logger.Error("failed to load grandpa keystore", "error", err)
 		return err
 	}
 
-	log.Info("[cmd] starting node...", "name", node.Name)
+	err = unlockKeystore(ks.Acco, cfg.Global.BasePath, cfg.Account.Unlock, ctx.String(PasswordFlag.Name))
+	if err != nil {
+		logger.Error("failed to unlock keystore", "error", err)
+		return err
+	}
+
+	err = unlockKeystore(ks.Babe, cfg.Global.BasePath, cfg.Account.Unlock, ctx.String(PasswordFlag.Name))
+	if err != nil {
+		logger.Error("failed to unlock keystore", "error", err)
+		return err
+	}
+
+	err = unlockKeystore(ks.Gran, cfg.Global.BasePath, cfg.Account.Unlock, ctx.String(PasswordFlag.Name))
+	if err != nil {
+		logger.Error("failed to unlock keystore", "error", err)
+		return err
+	}
+
+	node, err := dot.NewNode(cfg, ks, stopFunc)
+	if err != nil {
+		logger.Error("failed to create node services", "error", err)
+		return err
+	}
+
+	logger.Info("starting node...", "name", node.Name)
 
 	// start node
 	err = node.Start()
@@ -174,17 +220,19 @@ func gossamerAction(ctx *cli.Context) error {
 // initAction is the action for the "init" subcommand, initializes the trie and
 // state databases and loads initial state from the configured genesis file
 func initAction(ctx *cli.Context) error {
-	err := startLogger(ctx)
+	lvl, err := setupLogger(ctx)
 	if err != nil {
-		log.Error("[cmd] failed to start logger", "error", err)
+		logger.Error("failed to setup logger", "error", err)
 		return err
 	}
 
 	cfg, err := createInitConfig(ctx)
 	if err != nil {
-		log.Error("[cmd] failed to create node configuration", "error", err)
+		logger.Error("failed to create node configuration", "error", err)
 		return err
 	}
+
+	cfg.Global.LogLevel = lvl.String()
 
 	// expand data directory and update node configuration (performed separately
 	// from createDotConfig because dot config should not include expanded path)
@@ -198,13 +246,13 @@ func initAction(ctx *cli.Context) error {
 
 		// prompt user to confirm reinitialization
 		if force || confirmMessage("Are you sure you want to reinitialize the node? [Y/n]") {
-			log.Info(
-				"[cmd] reinitializing node...",
+			logger.Info(
+				"reinitializing node...",
 				"basepath", cfg.Global.BasePath,
 			)
 		} else {
-			log.Warn(
-				"[cmd] exiting without reinitializing the node",
+			logger.Warn(
+				"exiting without reinitializing the node",
 				"basepath", cfg.Global.BasePath,
 			)
 			return nil // exit if reinitialization is not confirmed
@@ -214,9 +262,63 @@ func initAction(ctx *cli.Context) error {
 	// initialize node (initialize state database and load genesis data)
 	err = dot.InitNode(cfg)
 	if err != nil {
-		log.Error("[cmd] failed to initialize node", "error", err)
+		logger.Error("failed to initialize node", "error", err)
 		return err
 	}
+
+	return nil
+}
+
+func buildSpecAction(ctx *cli.Context) error {
+	// set logger to critical, so output only contains genesis data
+	err := ctx.Set("log", "crit")
+	if err != nil {
+		return err
+	}
+	_, err = setupLogger(ctx)
+	if err != nil {
+		return err
+	}
+
+	var bs *dot.BuildSpec
+	if genesis := ctx.String(GenesisFlag.Name); genesis != "" {
+		bspec, e := dot.BuildFromGenesis(genesis)
+		if e != nil {
+			return e
+		}
+		bs = bspec
+	} else {
+		cfg, e := createBuildSpecConfig(ctx)
+		if e != nil {
+			return e
+		}
+		// expand data directory and update node configuration (performed separately
+		// from createDotConfig because dot config should not include expanded path)
+		cfg.Global.BasePath = utils.ExpandDir(cfg.Global.BasePath)
+
+		bspec, e := dot.BuildFromDB(cfg.Global.BasePath)
+		if e != nil {
+			return fmt.Errorf("error building spec from database, init must be run before build-spec or run build-spec with --genesis flag Error %s", e)
+		}
+		bs = bspec
+	}
+
+	if bs == nil {
+		return fmt.Errorf("error building genesis")
+	}
+
+	res := []byte{} //nolint
+	if ctx.Bool(RawFlag.Name) {
+		res, err = bs.ToJSONRaw()
+	} else {
+		res, err = bs.ToJSON()
+	}
+	if err != nil {
+		return err
+	}
+	// TODO implement --output flag so that user can specify redirecting output a file.
+	//   then this can be removed (See issue #1029)
+	fmt.Printf("%s", res)
 
 	return nil
 }

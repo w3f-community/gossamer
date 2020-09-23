@@ -43,20 +43,28 @@ it-stable:
 
 ## it-stress: Runs Integration Tests stress mode
 it-stress: build
-	@echo "  >  \033[32mRunning Integration Tests stress mode...\033[0m "
-	HOSTNAME=0.0.0.0 GOSSAMER_INTEGRATION_TEST_MODE=stress go test ./tests/stress/... -timeout=5m -p 1 -short -v
+	@echo "  >  \033[32mRunning stress tests...\033[0m "
+	HOSTNAME=0.0.0.0 MODE=stress go test ./tests/stress/... -timeout=10m -v -short -run TestSync_
+
+it-grandpa: build
+	@echo "  >  \033[32mRunning GRANDPA stress tests...\033[0m "
+	HOSTNAME=0.0.0.0 MODE=stress go test ./tests/stress/... -timeout=10m -v -short -run TestStress_Grandpa_
 
 it-rpc: build
 	@echo "  >  \033[32mRunning Integration Tests RPC Specs mode...\033[0m "
-	HOSTNAME=0.0.0.0 GOSSAMER_INTEGRATION_TEST_MODE=rpc_suite go test ./tests/rpc/... -timeout=5m -p 1 -short -v
+	HOSTNAME=0.0.0.0 MODE=rpc go test ./tests/rpc/... -timeout=5m -v
+
+it-sync: build
+	@echo "  >  \033[32mRunning Integration Tests sync mode...\033[0m "
+	HOSTNAME=0.0.0.0 MODE=sync go test ./tests/sync/... -timeout=5m -v
 
 ## test: Runs `go test -race` on project test files.
 test-state-race:
 	@echo "  >  \033[32mRunning race tests...\033[0m "
 	go test ./dot/state/... -race -timeout=5m
 
-## install: Install missing dependencies. Runs `go mod download` internally.
-install:
+## deps: Install missing dependencies. Runs `go mod download` internally.
+deps:
 	@echo "  >  \033[32mInstalling dependencies...\033[0m "
 	go mod download
 
@@ -65,14 +73,19 @@ build:
 	@echo "  >  \033[32mBuilding binary...\033[0m "
 	GOBIN=$(PWD)/bin go run scripts/ci.go install
 
-# init: Initialize gossamer using the default genesis and toml configuration files
-init:
-	./bin/gossamer init --log debug
+## debug: Builds application binary with debug flags and stores it in `./bin/gossamer`
+build-debug:
+	@echo "  >  \033[32mBuilding binary...\033[0m "
+	GOBIN=$(PWD)/bin go run scripts/ci.go install-debug
 
-## start: Starts application from binary executable in `./bin/gossamer`
+## init: Initialize gossamer using the default genesis and toml configuration files
+init:
+	./bin/gossamer --key alice init --genesis chain/gssmr/genesis.json
+
+## start: Starts application from binary executable in `./bin/gossamer` with built-in key alice
 start:
-	@echo "  >  \033[32mStarting server...\033[0m "
-	./bin/gossamer
+	@echo "  >  \033[32mStarting node...\033[0m "
+	./bin/gossamer --key alice
 
 $(ADDLICENSE):
 	go get -u github.com/google/addlicense
@@ -97,3 +110,7 @@ docker-build:
 
 gossamer: clean
 	GOBIN=$(PWD)/bin go run scripts/ci.go install
+
+## install: install the gossamer binary in $GOPATH/bin
+install:
+	GOBIN=$(GOPATH)/bin go run scripts/ci.go install

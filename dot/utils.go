@@ -19,7 +19,6 @@ package dot
 import (
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
 	"os"
 	"testing"
@@ -27,8 +26,27 @@ import (
 	"github.com/ChainSafe/gossamer/lib/genesis"
 	"github.com/ChainSafe/gossamer/lib/runtime"
 	"github.com/ChainSafe/gossamer/lib/utils"
+	log "github.com/ChainSafe/log15"
 	"github.com/stretchr/testify/require"
 )
+
+// setupLogger sets up the gossamer logger
+func setupLogger(cfg *Config) error {
+	if cfg.Global.LogLevel == "" {
+		cfg.Global.LogLevel = "info"
+	}
+
+	handler := log.StreamHandler(os.Stdout, log.TerminalFormat())
+	handler = log.CallerFileHandler(handler)
+	lvl, err := log.LvlFromString(cfg.Global.LogLevel)
+	if err != nil {
+		return err
+	}
+
+	logger.SetHandler(log.LvlFilterHandler(lvl, handler))
+	cfg.Global.lvl = lvl
+	return nil
+}
 
 // NewTestConfig returns a new test configuration using the provided basepath
 func NewTestConfig(t *testing.T) *Config {
@@ -36,11 +54,22 @@ func NewTestConfig(t *testing.T) *Config {
 
 	// TODO: use default config instead of gssmr config for test config #776
 
-	return &Config{
+	cfg := &Config{
 		Global: GlobalConfig{
 			Name:     GssmrConfig().Global.Name,
 			ID:       GssmrConfig().Global.ID,
 			BasePath: dir,
+			LogLevel: "info",
+		},
+		Log: LogConfig{
+			CoreLvl:           "info",
+			SyncLvl:           "info",
+			NetworkLvl:        "info",
+			RPCLvl:            "info",
+			StateLvl:          "info",
+			RuntimeLvl:        "info",
+			BlockProducerLvl:  "info",
+			FinalityGadgetLvl: "info",
 		},
 		Init:    GssmrConfig().Init,
 		Account: GssmrConfig().Account,
@@ -49,6 +78,10 @@ func NewTestConfig(t *testing.T) *Config {
 		RPC:     GssmrConfig().RPC,
 		System:  GssmrConfig().System,
 	}
+
+	cfg.Core.BabeThreshold = ""
+	cfg.Init.TestFirstEpoch = true
+	return cfg
 }
 
 // NewTestConfigWithFile returns a new test configuration and a temporary configuration file
@@ -56,24 +89,18 @@ func NewTestConfigWithFile(t *testing.T) (*Config, *os.File) {
 	cfg := NewTestConfig(t)
 
 	file, err := ioutil.TempFile(cfg.Global.BasePath, "config-")
-	if err != nil {
-		fmt.Println(fmt.Errorf("failed to create temporary file: %s", err))
-		require.Nil(t, err)
-	}
+	require.NoError(t, err)
 
 	cfgFile := ExportConfig(cfg, file.Name())
-
 	return cfg, cfgFile
 }
 
 // NewTestGenesis returns a test genesis instance using "gssmr" raw data
 func NewTestGenesis(t *testing.T) *genesis.Genesis {
-	fp := utils.GetGssmrGenesisPath()
+	fp := utils.GetGssmrGenesisRawPath()
 
-	gssmrGen, err := genesis.NewGenesisFromJSON(fp)
-	if err != nil {
-		t.Fatal(err)
-	}
+	gssmrGen, err := genesis.NewGenesisFromJSONRaw(fp)
+	require.NoError(t, err)
 
 	return &genesis.Genesis{
 		Name:       "test",
@@ -84,7 +111,36 @@ func NewTestGenesis(t *testing.T) *genesis.Genesis {
 	}
 }
 
-// NewTestGenesisFile returns a test genesis file using "gssmr" raw data
+// NewTestGenesisRawFile returns a test genesis-raw file using "gssmr" raw data
+func NewTestGenesisRawFile(t *testing.T, cfg *Config) *os.File {
+	dir := utils.NewTestDir(t)
+
+	file, err := ioutil.TempFile(dir, "genesis-")
+	require.Nil(t, err)
+
+	fp := utils.GetGssmrGenesisRawPath()
+
+	gssmrGen, err := genesis.NewGenesisFromJSONRaw(fp)
+	require.Nil(t, err)
+
+	gen := &genesis.Genesis{
+		Name:       cfg.Global.Name,
+		ID:         cfg.Global.ID,
+		Bootnodes:  cfg.Network.Bootnodes,
+		ProtocolID: cfg.Network.ProtocolID,
+		Genesis:    gssmrGen.GenesisFields(),
+	}
+
+	b, err := json.Marshal(gen)
+	require.Nil(t, err)
+
+	_, err = file.Write(b)
+	require.Nil(t, err)
+
+	return file
+}
+
+// NewTestGenesisFile returns a human-readable test genesis file using "gssmr" human readable data
 func NewTestGenesisFile(t *testing.T, cfg *Config) *os.File {
 	dir := utils.NewTestDir(t)
 

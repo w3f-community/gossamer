@@ -28,225 +28,179 @@ import (
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/crypto/sr25519"
 	"github.com/ChainSafe/gossamer/lib/genesis"
+	"github.com/ChainSafe/gossamer/lib/runtime"
 	"github.com/ChainSafe/gossamer/lib/trie"
+
+	log "github.com/ChainSafe/log15"
 )
 
-var testEpoch = uint64(2)
-
-func newTestVerificationManager(t *testing.T, withBlock bool, descriptor *NextEpochDescriptor) *VerificationManager {
-	dbSrv := state.NewService("")
+func newTestVerificationManager(t *testing.T, descriptor *Descriptor) *VerificationManager {
+	dbSrv := state.NewService("", log.LvlInfo)
 	dbSrv.UseMemDB()
+
+	tt := trie.NewEmptyTrie()
+	rt := runtime.NewTestRuntimeWithTrie(t, runtime.NODE_RUNTIME, tt, log.LvlCrit)
 
 	genesisData := new(genesis.Data)
 
-	err := dbSrv.Initialize(genesisData, genesisHeader, trie.NewEmptyTrie())
-	if err != nil {
-		t.Fatal(err)
-	}
+	err := dbSrv.Initialize(genesisData, genesisHeader, trie.NewEmptyTrie(), firstEpochInfo)
+	require.NoError(t, err)
 
 	err = dbSrv.Start()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if descriptor == nil {
-		descriptor = &NextEpochDescriptor{}
-	}
+	vm, err := NewVerificationManagerFromRuntime(dbSrv.Block, rt)
+	require.NoError(t, err)
 
-	// currentEpoch = 2
-	vm, err := NewVerificationManager(dbSrv.Block, testEpoch, descriptor)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if withBlock {
-		// preDigest with slot in epoch testEpoch = 2
-		// TODO: use BABE functions to do calculate pre-digest dynamically
-		preDigest, err := common.HexToBytes("0x064241424538e93dcef2efc275b72b4fa748332dc4c9f13be1125909cf90c8e9109c45da16b04bc5fdf9fe06a4f35e4ae4ed7e251ff9ee3d0d840c8237c9fb9057442dbf00f210d697a7b4959f792a81b948ff88937e30bf9709a8ab1314f71284da89a40000000000000000001100000000000000")
-		require.Nil(t, err)
-
-		nextEpochData := &NextEpochDescriptor{
-			Authorities: []*types.AuthorityData{},
-		}
-
-		consensusDigest := &types.ConsensusDigest{
-			ConsensusEngineID: types.BabeEngineID,
-			Data:              nextEpochData.Encode(),
-		}
-
-		conDigest := consensusDigest.Encode()
-
-		header := &types.Header{
-			ParentHash: genesisHeader.Hash(),
-			Number:     big.NewInt(1),
-			Digest:     [][]byte{preDigest, conDigest},
-		}
-
-		firstBlock := &types.Block{
-			Header: header,
-			Body:   &types.Body{},
-		}
-
-		err = vm.blockState.AddBlock(firstBlock)
-		require.Nil(t, err)
+	if descriptor != nil {
+		vm.descriptors[dbSrv.Block.GenesisHash()] = descriptor
 	}
 
 	return vm
 }
 
-// test getBlockEpoch
-func TestGetBlockEpoch(t *testing.T) {
-	vm := newTestVerificationManager(t, true, nil)
+func TestVerificationManager_SetAuthorityChangeAtBlock(t *testing.T) {
+	descriptor := &Descriptor{
+		AuthorityData: []*types.Authority{{Weight: 1}},
+		Randomness:    [types.RandomnessLength]byte{77},
+		Threshold:     big.NewInt(99),
+	}
 
-	header, err := vm.blockState.BestBlockHeader()
-	require.Nil(t, err)
+	vm := newTestVerificationManager(t, descriptor)
+	require.Equal(t, []common.Hash{vm.blockState.GenesisHash()}, vm.branches[0])
+	require.Equal(t, descriptor, vm.descriptors[vm.blockState.GenesisHash()])
 
-	epoch, err := vm.getBlockEpoch(header)
-	require.Nil(t, err)
-
-	require.Equal(t, vm.currentEpoch, epoch)
-}
-
-// test isBlockFromEpoch
-func TestIsBlockFromEpoch(t *testing.T) {
-	vm := newTestVerificationManager(t, true, nil)
-
-	header, err := vm.blockState.BestBlockHeader()
-	require.Nil(t, err)
-
-	ok, err := vm.isBlockFromEpoch(header, testEpoch)
-	require.Nil(t, err)
-	require.Equal(t, true, ok)
-
-	ok, err = vm.isBlockFromEpoch(header, 1)
-	require.Nil(t, err)
-	require.Equal(t, false, ok)
-}
-
-func TestCheckForConsensusDigest_NoDigest(t *testing.T) {
-	header := &types.Header{
-		ParentHash: genesisHeader.Hash(),
+	block1a := &types.Header{
 		Number:     big.NewInt(1),
+		ParentHash: vm.blockState.GenesisHash(),
 	}
 
-	_, err := checkForConsensusDigest(header)
-	require.NotNil(t, err)
-}
-
-func TestCheckForConsensusDigest_NoConsensusDigest(t *testing.T) {
-	vm := newTestVerificationManager(t, true, nil)
-
-	header, err := vm.blockState.BestBlockHeader()
-	require.Nil(t, err)
-
-	header.Digest = header.Digest[:1]
-
-	digest, err := checkForConsensusDigest(header)
-	require.Nil(t, err)
-	require.Nil(t, digest)
-}
-
-func TestCheckForConsensusDigest(t *testing.T) {
-	vm := newTestVerificationManager(t, true, nil)
-
-	header, err := vm.blockState.BestBlockHeader()
-	require.Nil(t, err)
-
-	digest, err := checkForConsensusDigest(header)
-	require.Nil(t, err)
-
-	nextEpochData := &NextEpochDescriptor{
-		Authorities: []*types.AuthorityData{},
+	block1b := &types.Header{
+		ExtrinsicsRoot: common.Hash{0x8},
+		Number:         big.NewInt(1),
+		ParentHash:     vm.blockState.GenesisHash(),
 	}
 
-	expected := &types.ConsensusDigest{
-		ConsensusEngineID: types.BabeEngineID,
-		Data:              nextEpochData.Encode(),
-	}
+	err := vm.blockState.AddBlock(&types.Block{
+		Header: block1a,
+		Body:   &types.Body{},
+	})
+	require.NoError(t, err)
+	err = vm.blockState.AddBlock(&types.Block{
+		Header: block1b,
+		Body:   &types.Body{},
+	})
+	require.NoError(t, err)
 
-	require.Equal(t, expected, digest)
+	authsA := []*types.Authority{{Weight: 77}}
+	vm.SetAuthorityChangeAtBlock(block1a, authsA)
+	require.Equal(t, []int64{1, 0}, vm.branchNums)
+	require.Equal(t, []common.Hash{block1a.Hash()}, vm.branches[1])
+
+	expected := &Descriptor{
+		AuthorityData: authsA,
+		Randomness:    descriptor.Randomness,
+		Threshold:     descriptor.Threshold,
+	}
+	require.Equal(t, expected, vm.descriptors[block1a.Hash()])
+
+	authsB := []*types.Authority{{Weight: 88}}
+	vm.SetAuthorityChangeAtBlock(block1b, authsB)
+	require.Equal(t, []int64{1, 0}, vm.branchNums)
+	require.Equal(t, []common.Hash{block1a.Hash(), block1b.Hash()}, vm.branches[1])
+
+	expected = &Descriptor{
+		AuthorityData: authsB,
+		Randomness:    descriptor.Randomness,
+		Threshold:     descriptor.Threshold,
+	}
+	require.Equal(t, expected, vm.descriptors[block1b.Hash()])
 }
 
 func TestVerificationManager_VerifyBlock(t *testing.T) {
-	babesession := createTestSession(t, nil)
-	descriptor := babesession.Descriptor()
+	babeService := createTestService(t, &ServiceConfig{
+		EpochThreshold: maxThreshold,
+	})
+	descriptor := babeService.Descriptor()
 
-	vm := newTestVerificationManager(t, false, descriptor)
+	vm := newTestVerificationManager(t, descriptor)
 
-	block, _ := createTestBlock(t, babesession, genesisHeader, [][]byte{})
+	block, _ := createTestBlock(t, babeService, genesisHeader, [][]byte{}, 1)
 	err := vm.blockState.AddBlock(block)
-	require.Nil(t, err)
+	require.NoError(t, err)
 
 	ok, err := vm.VerifyBlock(block.Header)
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.Equal(t, true, ok)
-	require.Equal(t, (*types.Header)(nil), vm.firstBlock)
 }
 
-func TestVerificationManager_VerifyBlock_WithDigest(t *testing.T) {
-	babesession := createTestSession(t, nil)
-	descriptor := babesession.Descriptor()
+func TestVerificationManager_VerifyBlock_Branches(t *testing.T) {
+	babeService := createTestService(t, &ServiceConfig{
+		EpochThreshold: maxThreshold,
+	})
+	descriptor := babeService.Descriptor()
 
-	vm := newTestVerificationManager(t, false, descriptor)
-	vm.currentEpoch = 0
-
-	block, _ := createTestBlock(t, babesession, genesisHeader, [][]byte{})
-
-	consensusDigest := &types.ConsensusDigest{
-		ConsensusEngineID: types.BabeEngineID,
-		Data:              descriptor.Encode(),
+	block1a := &types.Header{
+		Number:     big.NewInt(1),
+		ParentHash: babeService.blockState.GenesisHash(),
 	}
 
-	conDigest := consensusDigest.Encode()
-	block.Header.Digest = [][]byte{block.Header.Digest[0], conDigest}
-	block.Header.Number = big.NewInt(2)
+	block1b := &types.Header{
+		ExtrinsicsRoot: common.Hash{0x8},
+		Number:         big.NewInt(1),
+		ParentHash:     babeService.blockState.GenesisHash(),
+	}
 
-	// re-sign block
-	seal, err := babesession.buildBlockSeal(block.Header)
-	require.Nil(t, err)
+	vm := newTestVerificationManager(t, descriptor)
+	err := babeService.blockState.AddBlock(&types.Block{
+		Header: block1a,
+		Body:   &types.Body{},
+	})
+	require.NoError(t, err)
+	err = babeService.blockState.AddBlock(&types.Block{
+		Header: block1b,
+		Body:   &types.Body{},
+	})
+	require.NoError(t, err)
+	err = vm.blockState.AddBlock(&types.Block{
+		Header: block1a,
+		Body:   &types.Body{},
+	})
+	require.NoError(t, err)
+	err = vm.blockState.AddBlock(&types.Block{
+		Header: block1b,
+		Body:   &types.Body{},
+	})
+	require.NoError(t, err)
 
-	encSeal := seal.Encode()
-	block.Header.Digest = append(block.Header.Digest, encSeal)
+	// create a branch at block 1 on chain A
+	randomnessA := [types.RandomnessLength]byte{0x77}
 
-	err = vm.blockState.AddBlock(block)
-	require.Nil(t, err)
+	descriptorA := &Descriptor{
+		AuthorityData: descriptor.AuthorityData,
+		Randomness:    randomnessA,
+		Threshold:     maxThreshold,
+	}
+
+	vm.setDescriptorChangeAtBlock(block1a, descriptorA)
+	require.Equal(t, []int64{1, 0}, vm.branchNums)
+
+	// create and verify block that's descendant of block B, should verify
+	block, _ := createTestBlock(t, babeService, block1b, [][]byte{}, 1)
+	require.NoError(t, err)
 
 	ok, err := vm.VerifyBlock(block.Header)
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.Equal(t, true, ok)
-	require.Equal(t, block.Header, vm.firstBlock)
 
-	// create block with lower number, check that it's chosen as first block of epoch
-	block.Header.Number = big.NewInt(1)
-
-	seal, err = babesession.buildBlockSeal(block.Header)
-	require.Nil(t, err)
-
-	encSeal = seal.Encode()
-	block.Header.Digest = append(block.Header.Digest, encSeal)
+	// create and verify block that's descendant of block A, should verify
+	babeService.randomness = randomnessA
+	block, _ = createTestBlock(t, babeService, block1a, [][]byte{}, 1)
+	require.NoError(t, err)
 
 	ok, err = vm.VerifyBlock(block.Header)
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.Equal(t, true, ok)
-	require.Equal(t, block.Header, vm.firstBlock)
-
-	// create block with higher number, check that it's not chosen as first block of epoch
-	expected := block.Header.DeepCopy()
-	newBlock := &types.Block{
-		Header: block.Header.DeepCopy(),
-	}
-
-	newBlock.Header.Number = big.NewInt(99)
-	seal, err = babesession.buildBlockSeal(newBlock.Header)
-	require.Nil(t, err)
-
-	encSeal = seal.Encode()
-	newBlock.Header.Digest = append(newBlock.Header.Digest, encSeal)
-
-	ok, err = vm.VerifyBlock(newBlock.Header)
-	require.Nil(t, err)
-	require.Equal(t, true, ok)
-	require.Equal(t, expected, vm.firstBlock)
 }
 
 func TestVerifySlotWinner(t *testing.T) {
@@ -255,18 +209,18 @@ func TestVerifySlotWinner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &SessionConfig{
+	cfg := &ServiceConfig{
 		Keypair: kp,
 	}
 
-	babesession := createTestSession(t, cfg)
+	babeService := createTestService(t, cfg)
 
 	// create proof that we can authorize this block
-	babesession.epochThreshold = big.NewInt(0)
-	babesession.authorityIndex = 0
+	babeService.epochThreshold = maxThreshold
+	babeService.authorityIndex = 0
 	var slotNumber uint64 = 1
 
-	addAuthorshipProof(t, babesession, slotNumber)
+	addAuthorshipProof(t, babeService, slotNumber)
 
 	slot := Slot{
 		start:    uint64(time.Now().Unix()),
@@ -275,22 +229,18 @@ func TestVerifySlotWinner(t *testing.T) {
 	}
 
 	// create babe header
-	babeHeader, err := babesession.buildBlockBabeHeader(slot)
+	babeHeader, err := babeService.buildBlockBabeHeader(slot)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	authorityData := make([]*types.AuthorityData, 1)
-	authorityData[0] = &types.AuthorityData{
-		ID: kp.Public().(*sr25519.PublicKey),
+	authorityData := make([]*types.Authority, 1)
+	authorityData[0] = &types.Authority{
+		Key: kp.Public().(*sr25519.PublicKey),
 	}
-	babesession.authorityData = authorityData
+	babeService.authorityData = authorityData
 
-	verifier, err := newEpochVerifier(babesession.blockState, &NextEpochDescriptor{
-		Authorities: babesession.authorityData,
-		Randomness:  babesession.config.Randomness,
-	})
-
+	verifier, err := newVerifier(babeService.blockState, babeService.Descriptor())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,13 +256,10 @@ func TestVerifySlotWinner(t *testing.T) {
 }
 
 func TestVerifyAuthorshipRight(t *testing.T) {
-	babesession := createTestSession(t, nil)
-	block, _ := createTestBlock(t, babesession, genesisHeader, [][]byte{})
+	babeService := createTestService(t, nil)
+	block, _ := createTestBlock(t, babeService, genesisHeader, [][]byte{}, 1)
 
-	verifier, err := newEpochVerifier(babesession.blockState, &NextEpochDescriptor{
-		Authorities: babesession.authorityData,
-		Randomness:  babesession.config.Randomness,
-	})
+	verifier, err := newVerifier(babeService.blockState, babeService.Descriptor())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,30 +280,27 @@ func TestVerifyAuthorshipRight_Equivocation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &SessionConfig{
+	cfg := &ServiceConfig{
 		Keypair: kp,
 	}
 
-	babesession := createTestSession(t, cfg)
+	babeService := createTestService(t, cfg)
 
-	babesession.authorityData = make([]*types.AuthorityData, 1)
-	babesession.authorityData[0] = &types.AuthorityData{
-		ID: kp.Public().(*sr25519.PublicKey),
+	babeService.authorityData = make([]*types.Authority, 1)
+	babeService.authorityData[0] = &types.Authority{
+		Key: kp.Public().(*sr25519.PublicKey),
 	}
 
 	// create and add first block
-	block, _ := createTestBlock(t, babesession, genesisHeader, [][]byte{})
+	block, _ := createTestBlock(t, babeService, genesisHeader, [][]byte{}, 1)
 	block.Header.Hash()
 
-	err = babesession.blockState.AddBlock(block)
+	err = babeService.blockState.AddBlock(block)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	verifier, err := newEpochVerifier(babesession.blockState, &NextEpochDescriptor{
-		Authorities: babesession.authorityData,
-		Randomness:  babesession.config.Randomness,
-	})
+	verifier, err := newVerifier(babeService.blockState, babeService.Descriptor())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,12 +310,12 @@ func TestVerifyAuthorshipRight_Equivocation(t *testing.T) {
 	require.True(t, ok)
 
 	// create new block
-	block2, _ := createTestBlock(t, babesession, genesisHeader, [][]byte{})
+	block2, _ := createTestBlock(t, babeService, genesisHeader, [][]byte{}, 1)
 	block2.Header.Hash()
 
 	t.Log(block2.Header)
 
-	err = babesession.blockState.AddBlock(block2)
+	err = babeService.blockState.AddBlock(block2)
 	if err != nil {
 		t.Fatal(err)
 	}

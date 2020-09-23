@@ -17,7 +17,8 @@
 package babe
 
 import (
-	"bytes"
+	"fmt"
+	"math/big"
 
 	"github.com/ChainSafe/gossamer/dot/types"
 	"github.com/ChainSafe/gossamer/lib/crypto/sr25519"
@@ -45,54 +46,21 @@ func NewSlot(start, duration, number uint64) *Slot {
 	}
 }
 
-// NextEpochDescriptor contains information about the next epoch.
-// It is broadcast as part of the consensus digest in the first block of the epoch.
-type NextEpochDescriptor struct {
-	Authorities []*types.AuthorityData
-	Randomness  [RandomnessLength]byte // TODO: update to [32]byte when runtime is updated
-}
+// AuthorityData is an alias for []*types.Authority
+type AuthorityData []*types.Authority
 
-// NextEpochDescriptorRaw contains information about the next epoch.
-type NextEpochDescriptorRaw struct {
-	Authorities []*types.AuthorityDataRaw
-	Randomness  [RandomnessLength]byte
-}
-
-// Encode returns the SCALE encoding of the NextEpochDescriptor.
-func (n *NextEpochDescriptor) Encode() []byte {
-	enc := []byte{}
-
-	for _, a := range n.Authorities {
-		enc = append(enc, a.Encode()...)
+// String returns the AuthorityData as a formatted string
+func (d AuthorityData) String() string {
+	str := ""
+	for _, di := range []*types.Authority(d) {
+		str = str + fmt.Sprintf("[key=0x%x idx=%d] ", di.Key.Encode(), di.Weight)
 	}
-
-	return append(enc, n.Randomness[:]...)
+	return str
 }
 
-// Decode sets the NextEpochDescriptor to the SCALE decoded input.
-// TODO: change to io.Reader
-func (n *NextEpochDescriptor) Decode(in []byte) error {
-	n.Authorities = []*types.AuthorityData{}
-
-	i := 0
-	for i = 0; i < (len(in)-32)/40; i++ {
-		auth := new(types.AuthorityData)
-		buf := &bytes.Buffer{}
-		_, err := buf.Write(in[i*40 : (i+1)*40])
-		if err != nil {
-			return err
-		}
-		err = auth.Decode(buf)
-		if err != nil {
-			return err
-		}
-
-		n.Authorities = append(n.Authorities, auth)
-	}
-
-	rand := [32]byte{}
-	copy(rand[:], in[i*40:])
-	n.Randomness = rand
-
-	return nil
+// Descriptor contains the information needed to verify blocks
+type Descriptor struct {
+	AuthorityData []*types.Authority
+	Randomness    [types.RandomnessLength]byte
+	Threshold     *big.Int
 }

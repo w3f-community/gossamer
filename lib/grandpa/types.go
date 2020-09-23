@@ -18,17 +18,39 @@ package grandpa
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
+	"io"
 
 	"github.com/ChainSafe/gossamer/dot/types"
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/crypto/ed25519"
+	"github.com/ChainSafe/gossamer/lib/scale"
 )
 
 type subround byte
 
 var prevote subround = 0
 var precommit subround = 1
+
+func (s subround) Encode() ([]byte, error) {
+	return []byte{byte(s)}, nil
+}
+
+func (s subround) Decode(r io.Reader) (subround, error) {
+	b, err := common.ReadByte(r)
+	if err != nil {
+		return 255, nil
+	}
+
+	if b == 0 {
+		return prevote, nil
+	} else if b == 1 {
+		return precommit, nil
+	} else {
+		return 255, ErrCannotDecodeSubround
+	}
+}
 
 func (s subround) String() string {
 	if s == prevote {
@@ -49,6 +71,39 @@ type Voter struct {
 // PublicKeyBytes returns the voter key as PublicKeyBytes
 func (v *Voter) PublicKeyBytes() ed25519.PublicKeyBytes {
 	return v.key.AsBytes()
+}
+
+// String returns a formatted Voter string
+func (v *Voter) String() string {
+	return fmt.Sprintf("[key=0x%x id=%d]", v.PublicKeyBytes(), v.id)
+}
+
+// NewVotersFromAuthorityData returns an array of Voters given an array of GrandpaAuthorityData
+func NewVotersFromAuthorityData(ad []*types.Authority) []*Voter {
+	v := make([]*Voter, len(ad))
+
+	for i, d := range ad {
+		if pk, ok := d.Key.(*ed25519.PublicKey); ok {
+			v[i] = &Voter{
+				key: pk,
+				id:  d.Weight,
+			}
+		}
+	}
+
+	return v
+}
+
+// Voters represents []*Voter
+type Voters []*Voter
+
+// String returns a formatted Voters string
+func (v Voters) String() string {
+	str := ""
+	for _, w := range v {
+		str = str + w.String() + " "
+	}
+	return str
 }
 
 // State represents a GRANDPA state
@@ -136,49 +191,84 @@ func NewVoteFromHash(hash common.Hash, blockState BlockState) (*Vote, error) {
 	return NewVoteFromHeader(h), nil
 }
 
+// Encode returns the SCALE encoding of a Vote
+func (v *Vote) Encode() ([]byte, error) {
+	buf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(buf, v.number)
+	return append(v.hash[:], buf...), nil
+}
+
+// Decode returns the SCALE decoded Vote
+func (v *Vote) Decode(r io.Reader) (*Vote, error) {
+	if v == nil {
+		v = new(Vote)
+	}
+
+	var err error
+	v.hash, err = common.ReadHash(r)
+	if err != nil {
+		return nil, err
+	}
+
+	v.number, err = common.ReadUint64(r)
+	if err != nil {
+		return nil, err
+	}
+
+	return v, nil
+}
+
+// String returns the Vote as a string
 func (v *Vote) String() string {
 	return fmt.Sprintf("hash=%s number=%d", v.hash, v.number)
 }
 
-// FullVote represents a vote with additional information about the state
-// this is encoded and signed and the signature is included in SignedMessage
-type FullVote struct {
-	stage subround
-	vote  *Vote
-	round uint64
-	setID uint64
-}
-
-// VoteMessage represents a network-level vote message
-// https://github.com/paritytech/substrate/blob/master/client/finality-grandpa/src/communication/gossip.rs#L336
-type VoteMessage struct {
-	setID   uint64
-	round   uint64
-	stage   subround // 0 for pre-vote, 1 for pre-commit
-	message *SignedMessage
-}
-
-// SignedMessage represents a block hash and number signed by an authority
-// https://github.com/paritytech/substrate/blob/master/client/finality-grandpa/src/lib.rs#L146
-type SignedMessage struct {
-	hash        common.Hash
-	number      uint64
-	signature   [64]byte // ed25519.SignatureLength
-	authorityID ed25519.PublicKeyBytes
-}
-
-// Justification struct
-//nolint:structcheck
+// Justification represents a justification for a finalized block
 type Justification struct {
-	vote      Vote     //nolint:unused
-	signature []byte   //nolint:unused
-	pubkey    [32]byte //nolint:unused
+	Vote        *Vote
+	Signature   [64]byte
+	AuthorityID ed25519.PublicKeyBytes
 }
 
-// FinalizationMessage struct
-//nolint:structcheck
-type FinalizationMessage struct {
-	round         uint64        //nolint:unused
-	vote          Vote          //nolint:unused
-	justification Justification //nolint:unused
+// Encode returns the SCALE encoded Justification
+func (j *Justification) Encode() ([]byte, error) {
+	enc, err := j.Vote.Encode()
+	if err != nil {
+		return nil, err
+	}
+
+	enc = append(enc, j.Signature[:]...)
+	enc = append(enc, j.AuthorityID[:]...)
+	return enc, nil
+}
+
+// Decode returns the SCALE decoded Justification
+func (j *Justification) Decode(r io.Reader) (*Justification, error) {
+	sd := &scale.Decoder{Reader: r}
+	i, err := sd.Decode(j)
+	return i.(*Justification), err
+}
+
+// FullJustification represents an array of Justifications, used to respond to catch up requests
+type FullJustification []*Justification
+
+func newFullJustification(j []*Justification) FullJustification {
+	return FullJustification(j)
+}
+
+// Encode returns the SCALE encoding of a FullJustification
+func (j FullJustification) Encode() ([]byte, error) {
+	return scale.Encode(j)
+}
+
+// Decode returns a SCALE decoded FullJustification
+func (j FullJustification) Decode(r io.Reader) (FullJustification, error) {
+	sd := &scale.Decoder{Reader: r}
+	i, err := sd.Decode([]*Justification{})
+	if err != nil {
+		return FullJustification{}, err
+	}
+
+	j = FullJustification(i.([]*Justification))
+	return j, nil
 }

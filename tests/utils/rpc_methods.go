@@ -19,12 +19,18 @@ package utils
 //nolint
 var (
 	// CHAIN METHODS
-	ChainGetBlock  = "chain_getBlock"
-	ChainGetHeader = "chain_getHeader"
+	ChainGetBlock                = "chain_getBlock"
+	ChainGetHeader               = "chain_getHeader"
+	ChainGetFinalizedHead        = "chain_getFinalizedHead"
+	ChainGetFinalizedHeadByRound = "chain_getFinalizedHeadByRound"
+	ChainGetBlockHash            = "chain_getBlockHash"
 
 	// AUTHOR METHODS
 	AuthorSubmitExtrinsic = "author_submitExtrinsic"
 
 	// STATE METHODS
 	StateGetStorage = "state_getStorage"
+
+	// DEV METHODS
+	DevControl = "dev_control"
 )

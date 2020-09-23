@@ -26,15 +26,14 @@ import (
 	"path/filepath"
 	"testing"
 
+	database "github.com/ChainSafe/chaindb"
 	"github.com/ChainSafe/gossamer/lib/common"
 	"github.com/ChainSafe/gossamer/lib/keystore"
 	"github.com/ChainSafe/gossamer/lib/trie"
 	"github.com/ChainSafe/gossamer/lib/utils"
-	wasm "github.com/wasmerio/go-ext-wasm/wasmer"
-
 	log "github.com/ChainSafe/log15"
-
 	"github.com/stretchr/testify/require"
+	wasm "github.com/wasmerio/go-ext-wasm/wasmer"
 )
 
 // TestAuthorityDataKey is the location of authority data in the storage trie
@@ -42,29 +41,67 @@ var TestAuthorityDataKey, _ = common.HexToBytes("0x3a6772616e6470615f617574686f7
 
 // NewTestRuntime will create a new runtime (polkadot/test)
 func NewTestRuntime(t *testing.T, targetRuntime string) *Runtime {
-	return NewTestRuntimeWithTrie(t, targetRuntime, nil)
+	return NewTestRuntimeWithTrie(t, targetRuntime, nil, log.LvlInfo)
 }
 
 // NewTestRuntimeWithTrie will create a new runtime (polkadot/test) with the supplied trie as the storage
-func NewTestRuntimeWithTrie(t *testing.T, targetRuntime string, tt *trie.Trie) *Runtime {
+func NewTestRuntimeWithTrie(t *testing.T, targetRuntime string, tt *trie.Trie, lvl log.Lvl) *Runtime {
 	testRuntimeFilePath, testRuntimeURL, importsFunc := GetRuntimeVars(targetRuntime)
 
 	_, err := GetRuntimeBlob(testRuntimeFilePath, testRuntimeURL)
 	require.Nil(t, err, "Fail: could not get runtime", "targetRuntime", targetRuntime)
 
-	rs := NewTestRuntimeStorage(tt)
+	s := newTestRuntimeStorage(tt)
 
 	fp, err := filepath.Abs(testRuntimeFilePath)
 	require.Nil(t, err, "could not create testRuntimeFilePath", "targetRuntime", targetRuntime)
 
-	r, err := NewRuntimeFromFile(fp, rs, keystore.NewKeystore(), importsFunc)
+	ns := NodeStorage{
+		LocalStorage:      database.NewMemDatabase(),
+		PersistentStorage: database.NewMemDatabase(), // we're using a local storage here since this is a test runtime
+	}
+	cfg := &Config{
+		Storage:     s,
+		Keystore:    keystore.NewGenericKeystore("test"),
+		Imports:     importsFunc,
+		LogLvl:      lvl,
+		NodeStorage: ns,
+	}
+
+	r, err := NewRuntimeFromFile(fp, cfg)
 	require.Nil(t, err, "Got error when trying to create new VM", "targetRuntime", targetRuntime)
 	require.NotNil(t, r, "Could not create new VM instance", "targetRuntime", targetRuntime)
+	return r
+}
 
+// NewTestRuntimeWithRole returns a test runtime with given role value
+func NewTestRuntimeWithRole(t *testing.T, targetRuntime string, role byte) *Runtime {
+	testRuntimeFilePath, testRuntimeURL, importsFunc := GetRuntimeVars(targetRuntime)
+
+	_, err := GetRuntimeBlob(testRuntimeFilePath, testRuntimeURL)
+	require.Nil(t, err, "Fail: could not get runtime", "targetRuntime", targetRuntime)
+
+	s := newTestRuntimeStorage(nil)
+
+	fp, err := filepath.Abs(testRuntimeFilePath)
+	require.Nil(t, err, "could not create testRuntimeFilePath", "targetRuntime", targetRuntime)
+
+	cfg := &Config{
+		Storage:  s,
+		Keystore: keystore.NewGenericKeystore("test"),
+		Imports:  importsFunc,
+		LogLvl:   log.LvlInfo,
+		Role:     role,
+	}
+
+	r, err := NewRuntimeFromFile(fp, cfg)
+	require.Nil(t, err, "Got error when trying to create new VM", "targetRuntime", targetRuntime)
+	require.NotNil(t, r, "Could not create new VM instance", "targetRuntime", targetRuntime)
 	return r
 }
 
 // exportRuntime writes the runtime to a file as a hex string.
+// nolint  (without this the linter complains that exportRuntime is unused (used in helper.test.go 28)
 func exportRuntime(t *testing.T, targetRuntime string, outFp string) {
 	testRuntimeFilePath, testRuntimeURL, _ := GetRuntimeVars(targetRuntime)
 
@@ -169,84 +206,56 @@ func GetRuntimeBlob(testRuntimeFilePath, testRuntimeURL string) (n int64, err er
 	return n, err
 }
 
-// TestRuntimeStorage holds trie pointer
-type TestRuntimeStorage struct {
+type testRuntimeStorage struct {
 	trie *trie.Trie
 }
 
-// NewTestRuntimeStorage creates new instance of TestRuntimeStorage
-func NewTestRuntimeStorage(tr *trie.Trie) *TestRuntimeStorage {
+func newTestRuntimeStorage(tr *trie.Trie) *testRuntimeStorage {
 	if tr == nil {
 		tr = trie.NewEmptyTrie()
 	}
-	return &TestRuntimeStorage{
+	return &testRuntimeStorage{
 		trie: tr,
 	}
 }
 
-// TrieAsString is a dummy test func
-func (trs TestRuntimeStorage) TrieAsString() string {
+func (trs testRuntimeStorage) TrieAsString() string {
 	return trs.trie.String()
 }
 
-// SetStorage is a dummy test func
-func (trs TestRuntimeStorage) SetStorage(key []byte, value []byte) error {
-	//fmt.Println(trs.trie.String())
-
-	//log.Debug("[teststate] SetStorage", "key", fmt.Sprintf("0x%x", key), "val", fmt.Sprintf("0x%x", value))
-	err := trs.trie.Put(key, value)
-	if err != nil {
-		return err
-	}
-
-	val, err := trs.trie.Get(key)
-	log.Debug("[teststate] SetStorage", "key", fmt.Sprintf("0x%x", key), "val", fmt.Sprintf("0x%x", val))
-
-	fmt.Println(trs.trie.String())
-	return nil
+func (trs testRuntimeStorage) Set(key []byte, value []byte) error {
+	return trs.trie.Put(key, value)
 }
 
-// GetStorage is a dummy test func
-func (trs TestRuntimeStorage) GetStorage(key []byte) ([]byte, error) {
-	val, err := trs.trie.Get(key)
-	log.Debug("[teststate] GetStorage", "key", fmt.Sprintf("0x%x", key), "val", fmt.Sprintf("0x%x", val))
-	fmt.Println(trs.trie.String())
-
-	return val, err
+func (trs testRuntimeStorage) Get(key []byte) ([]byte, error) {
+	return trs.trie.Get(key)
 }
 
-// StorageRoot is a dummy test func
-func (trs TestRuntimeStorage) StorageRoot() (common.Hash, error) {
+func (trs testRuntimeStorage) Root() (common.Hash, error) {
 	return trs.trie.Hash()
 }
 
-// SetStorageChild is a dummy test func
-func (trs TestRuntimeStorage) SetStorageChild(keyToChild []byte, child *trie.Trie) error {
+func (trs testRuntimeStorage) SetChild(keyToChild []byte, child *trie.Trie) error {
 	return trs.trie.PutChild(keyToChild, child)
 }
 
-// SetStorageIntoChild is a dummy test func
-func (trs TestRuntimeStorage) SetStorageIntoChild(keyToChild, key, value []byte) error {
+func (trs testRuntimeStorage) SetChildStorage(keyToChild, key, value []byte) error {
 	return trs.trie.PutIntoChild(keyToChild, key, value)
 }
 
-// GetStorageFromChild is a dummy test func
-func (trs TestRuntimeStorage) GetStorageFromChild(keyToChild, key []byte) ([]byte, error) {
+func (trs testRuntimeStorage) GetChildStorage(keyToChild, key []byte) ([]byte, error) {
 	return trs.trie.GetFromChild(keyToChild, key)
 }
 
-// ClearStorage is a dummy test func
-func (trs TestRuntimeStorage) ClearStorage(key []byte) error {
+func (trs testRuntimeStorage) Delete(key []byte) error {
 	return trs.trie.Delete(key)
 }
 
-// Entries is a dummy test func
-func (trs TestRuntimeStorage) Entries() map[string][]byte {
+func (trs testRuntimeStorage) Entries() map[string][]byte {
 	return trs.trie.Entries()
 }
 
-// SetBalance sets the balance for an account with the given public key
-func (trs TestRuntimeStorage) SetBalance(key [32]byte, balance uint64) error {
+func (trs testRuntimeStorage) SetBalance(key [32]byte, balance uint64) error {
 	skey, err := common.BalanceKey(key)
 	if err != nil {
 		return err
@@ -255,17 +264,16 @@ func (trs TestRuntimeStorage) SetBalance(key [32]byte, balance uint64) error {
 	bb := make([]byte, 8)
 	binary.LittleEndian.PutUint64(bb, balance)
 
-	return trs.SetStorage(skey, bb)
+	return trs.Set(skey, bb)
 }
 
-// GetBalance gets the balance for an account with the given public key
-func (trs TestRuntimeStorage) GetBalance(key [32]byte) (uint64, error) {
+func (trs testRuntimeStorage) GetBalance(key [32]byte) (uint64, error) {
 	skey, err := common.BalanceKey(key)
 	if err != nil {
 		return 0, err
 	}
 
-	bal, err := trs.GetStorage(skey)
+	bal, err := trs.Get(skey)
 	if err != nil {
 		return 0, err
 	}
