@@ -83,6 +83,7 @@ func (cm *ChainModule) GetBlock(r *http.Request, req *ChainHashRequest, res *Cha
 	if err != nil {
 		return err
 	}
+fmt.Printf("GetBlock hash %v\n", hash)
 
 	block, err := cm.blockAPI.GetBlockByHash(hash)
 	if err != nil {

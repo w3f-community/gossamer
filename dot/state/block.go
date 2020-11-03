@@ -535,7 +535,7 @@ func (bs *BlockState) AddBlockWithArrivalTime(block *types.Block, arrivalTime ui
 		return err
 	}
 	hash := block.Header.Hash()
-fmt.Printf("ADDED %s %s\n", block.Header.Number, hash)
+
 	// set best block key if this is the highest block we've seen
 	if hash == bs.BestBlockHash() {
 		err = bs.setBestBlockHashKey(hash)
@@ -558,10 +558,20 @@ fmt.Printf("ADDED %s %s\n", block.Header.Number, hash)
 		return err
 	}
 
+	go bs.checkBlock(hash)
 	go bs.notifyImported(block)
 	return err
 }
 
+func (bs *BlockState) checkBlock(hash common.Hash) {
+	time.Sleep(time.Second * 5)
+	b, err := bs.GetBlockByHash(hash)
+	if err != nil {
+		fmt.Printf("%v ERROR %v\n", hash, err)
+		return
+	}
+	fmt.Printf("%v Has block %v\n", hash, b.Header.Number)
+}
 // GetAllBlocksAtDepth returns all hashes with the depth of the given hash plus one
 func (bs *BlockState) GetAllBlocksAtDepth(hash common.Hash) []common.Hash {
 	return bs.bt.GetAllBlocksAtDepth(hash)
