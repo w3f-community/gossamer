@@ -91,15 +91,15 @@ func (cm *ChainModule) GetBlock(r *http.Request, req *ChainHashRequest, res *Cha
 
 	res.Block.Header = HeaderToJSON(*block.Header)
 
-	if *block.Body != nil {
-		ext, err := block.Body.AsExtrinsics()
-		if err != nil {
-			return err
-		}
-		for _, e := range ext {
-			res.Block.Body = append(res.Block.Body, fmt.Sprintf("0x%x", e))
-		}
-	}
+	//if *block.Body != nil {
+	//	ext, err := block.Body.AsExtrinsics()
+	//	if err != nil {
+	//		return err
+	//	}
+	//	for _, e := range ext {
+	//		res.Block.Body = append(res.Block.Body, fmt.Sprintf("0x%x", e))
+	//	}
+	//}
 	return nil
 }
 

@@ -535,7 +535,7 @@ func (bs *BlockState) AddBlockWithArrivalTime(block *types.Block, arrivalTime ui
 		return err
 	}
 	hash := block.Header.Hash()
-
+fmt.Printf("ADDED %s %s\n", block.Header.Number, hash)
 	// set best block key if this is the highest block we've seen
 	if hash == bs.BestBlockHash() {
 		err = bs.setBestBlockHashKey(hash)
