@@ -433,7 +433,13 @@ func (bs *BlockState) SetFinalizedHash(hash common.Hash, round, setID uint64) er
 
 	pruned := bs.bt.Prune(hash)
 	for _, rem := range pruned {
-		err := bs.DeleteBlock(rem)
+		des, err := bs.IsDescendantOf(rem, hash)
+		if err != nil {
+			logger.Error("pruning block error", "error", err)
+		}
+		// TODO ed remove print and uncomment DeleteBlock (Not deleting for testing)
+		fmt.Printf("IS DES %v, error %v\n", des, err)
+		//err = bs.DeleteBlock(rem)
 		if err != nil {
 			return err
 		}
@@ -558,19 +564,20 @@ func (bs *BlockState) AddBlockWithArrivalTime(block *types.Block, arrivalTime ui
 		return err
 	}
 
-	go bs.checkBlock(hash)
+	go bs.checkBlock(hash, time.Duration(time.Second * 0))
+	go bs.checkBlock(hash, time.Duration(time.Second * 5))
 	go bs.notifyImported(block)
 	return err
 }
 
-func (bs *BlockState) checkBlock(hash common.Hash) {
-	time.Sleep(time.Second * 5)
+func (bs *BlockState) checkBlock(hash common.Hash, delay time.Duration) {
+	time.Sleep(delay)
 	b, err := bs.GetBlockByHash(hash)
 	if err != nil {
-		fmt.Printf("%v ERROR %v\n", hash, err)
+		fmt.Printf("T: %v, %v ERROR %v\n", delay, hash, err)
 		return
 	}
-	fmt.Printf("%v Has block %v\n", hash, b.Header.Number)
+	fmt.Printf("T: %v, %v Has block %v\n",delay, hash, b.Header.Number)
 }
 // GetAllBlocksAtDepth returns all hashes with the depth of the given hash plus one
 func (bs *BlockState) GetAllBlocksAtDepth(hash common.Hash) []common.Hash {
